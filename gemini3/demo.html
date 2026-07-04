@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Neon Void</title>
+    <style>
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #000; color: #fff; font-family: monospace; }
+        canvas { display: block; width: 100%; height: 100%; }
+        #overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            display: flex; align-items: center; justify-content: center;
+            background: rgba(0,0,0,0.8); cursor: pointer; z-index: 10;
+            flex-direction: column;
+            transition: opacity 0.5s;
+        }
+        #overlay h1 { font-size: 3rem; text-shadow: 0 0 10px #f0f; margin-bottom: 0.5rem; }
+        #overlay p { font-size: 1.2rem; color: #aaa; animation: blink 1s infinite; }
+        @keyframes blink { 50% { opacity: 0.5; } }
+        .hidden { opacity: 0; pointer-events: none; }
+        #scroller {
+            position: absolute; bottom: 20px; left: 0; width: 100%; height: 60px;
+            overflow: hidden; white-space: nowrap; pointer-events: none;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 2rem; color: #fff; text-shadow: 0 0 10px #0ff, 0 0 20px #00f;
+            display: flex; align-items: center;
+        }
+        #scroller-track {
+            display: inline-block;
+            padding-left: 100vw;
+            animation: scrollText 30s linear infinite;
+        }
+        @keyframes scrollText {
+            0% { transform: translateX(0); }
+            100% { transform: translateX(-100%); }
+        }
+    </style>
+</head>
+<body>
+
+<div id="overlay">
+    <h1>NEON VOID</h1>
+    <p>[ CLICK TO START ]</p>
+</div>
+<canvas id="glcanvas"></canvas>
+<div id="scroller">
+    <div id="scroller-track">
+        NEON VOID // A Single File Demo // Code & Music by Gemini // 4KB Style // Raymarching SDFs // WebAudio API Synthesis // No External Assets // Greetings to the Demoscene... Pulse the beat... Enter the Void...
+    </div>
+</div>
+
+<script>
+/**
+ * NEON VOID - Single File Demo
+ */
+
+const canvas = document.getElementById('glcanvas');
+const gl = canvas.getContext('webgl2');
+const overlay = document.getElementById('overlay');
+
+if (!gl) {
+    document.body.innerHTML = "WebGL2 not supported.";
+    throw new Error("WebGL2 not supported");
+}
+
+// --- STATE ---
+let startTime = 0;
+let isPlaying = false;
+let audioCtx;
+
+// --- SHADERS ---
+
+// Vertex Shader: Simple pass-through for a full-screen quad
+const vsSource = `#version 300 es
+in vec4 position;
+void main() {
+    gl_Position = position;
+}
+`;
+
+// Fragment Shader: Neon Void Raymarcher
+const fsSource = `#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform float u_bass;
+uniform float u_high;
+out vec4 outColor;
+
+// Rotation matrix
+mat2 rot(float a) {
+    float s = sin(a);
+    float c = cos(a);
+    return mat2(c, -s, s, c);
+}
+
+// Signed Distance Function for a box
+float sdBox(vec3 p, vec3 b) {
+    vec3 q = abs(p) - b;
+    return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0);
+}
+
+// Scene Map
+float map(vec3 p) {
+    // Repeat space
+    vec3 q = p;
+    q.z = mod(p.z + u_time * 10.0, 4.0) - 2.0; // Move forward
+    q.x = mod(p.x + 2.0, 4.0) - 2.0;
+    q.y = mod(p.y + 2.0, 4.0) - 2.0;
+    
+    // Rotate boxes for interest
+    q.xy *= rot(p.z * 0.1 + u_time * 0.5);
+    
+    // Pulse the box size with the bass
+    float size = 0.4 + u_bass * 0.3;
+    return sdBox(q, vec3(size)); 
+}
+
+void main() {
+    vec2 uv = (gl_FragCoord.xy - 0.5 * u_resolution.xy) / u_resolution.y;
+    
+    // Camera
+    vec3 ro = vec3(0.0, 0.0, -3.0); // Ray origin
+    vec3 rd = normalize(vec3(uv, 1.0)); // Ray direction
+    
+    // Camera shake on bass
+    rd.xy *= rot(u_time * 0.1 + u_bass * 0.05);
+
+    float t = 0.0; // Total distance
+    int i; // Steps
+    float d; // Current distance
+    
+    // Raymarching loop
+    for(i = 0; i < 80; i++) {
+        vec3 p = ro + rd * t;
+        d = map(p);
+        t += d * 0.5;
+        if(d < 0.001 || t > 100.0) break;
+    }
+    
+    // Color
+    vec3 col = vec3(0.0);
+    
+    if (t < 100.0) {
+        // Geometry hit
+        vec3 p = ro + rd * t;
+        
+        float glow = float(i) / 80.0;
+        
+        // Neon Palette
+        vec3 neonBlue = vec3(0.1, 0.8, 1.0);
+        vec3 neonPink = vec3(1.0, 0.1, 0.8);
+        
+        // Mix based on position
+        vec3 baseColor = mix(neonBlue, neonPink, sin(p.z * 0.2 + u_time) * 0.5 + 0.5);
+        
+        // Flash highs
+        baseColor += vec3(u_high);
+
+        col = baseColor * glow * 2.0;
+        
+        // Fog (fade to black)
+        col *= 1.0 / (1.0 + t * t * 0.05);
+    }
+    
+    // Background/Glow for infinite
+    col += vec3(0.1, 0.0, 0.2) * (float(i) / 80.0);
+
+    outColor = vec4(col, 1.0);
+}
+`;
+
+// --- WEBGL SETUP ---
+
+function createShader(gl, type, source) {
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        console.error('Shader compile error:', gl.getShaderInfoLog(shader));
+        gl.deleteShader(shader);
+        return null;
+    }
+    return shader;
+}
+
+const program = gl.createProgram();
+const vs = createShader(gl, gl.VERTEX_SHADER, vsSource);
+const fs = createShader(gl, gl.FRAGMENT_SHADER, fsSource);
+gl.attachShader(program, vs);
+gl.attachShader(program, fs);
+gl.linkProgram(program);
+
+if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    console.error('Program link error:', gl.getProgramInfoLog(program));
+}
+
+// Full screen quad (2 triangles)
+const positions = new Float32Array([
+    -1, -1,
+     1, -1,
+    -1,  1,
+    -1,  1,
+     1, -1,
+     1,  1,
+]);
+
+const positionAttributeLocation = gl.getAttribLocation(program, "position");
+const positionBuffer = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
+
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.enableVertexAttribArray(positionAttributeLocation);
+gl.vertexAttribPointer(positionAttributeLocation, 2, gl.FLOAT, false, 0, 0);
+
+const resolutionLocation = gl.getUniformLocation(program, "u_resolution");
+const timeLocation = gl.getUniformLocation(program, "u_time");
+const bassLocation = gl.getUniformLocation(program, "u_bass");
+const highLocation = gl.getUniformLocation(program, "u_high");
+
+// --- RENDER LOOP ---
+
+function resize() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    gl.viewport(0, 0, canvas.width, canvas.height);
+}
+window.addEventListener('resize', resize);
+resize();
+
+function render(time) {
+    if (!isPlaying) return;
+
+    time *= 0.001; // convert to seconds
+    
+    // Audio Analysis
+    let bass = 0.0;
+    let high = 0.0;
+    if (analyser && dataArray) {
+        analyser.getByteFrequencyData(dataArray);
+        
+        // Bass: roughly bins 0-5
+        let bSum = 0;
+        for(let i=0; i<5; i++) bSum += dataArray[i];
+        bass = (bSum / 5) / 255.0;
+
+        // Highs: roughly bins 30-60
+        let hSum = 0;
+        let hCount = 0;
+        for(let i=30; i<60 && i<dataArray.length; i++) {
+            hSum += dataArray[i];
+            hCount++;
+        }
+        if(hCount > 0) high = (hSum / hCount) / 255.0;
+    }
+
+    gl.useProgram(program);
+    gl.bindVertexArray(vao);
+
+    gl.uniform2f(resolutionLocation, canvas.width, canvas.height);
+    gl.uniform1f(timeLocation, time);
+    gl.uniform1f(bassLocation, bass);
+    gl.uniform1f(highLocation, high);
+
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+    requestAnimationFrame(render);
+}
+
+// --- INITIALIZATION ---
+
+overlay.addEventListener('click', () => {
+    if (isPlaying) return;
+    
+    overlay.classList.add('hidden');
+    isPlaying = true;
+    startTime = performance.now() * 0.001;
+
+    // Init Audio here later
+    initAudio();
+
+    requestAnimationFrame(render);
+});
+
+// --- AUDIO ENGINE ---
+
+let analyser;
+let dataArray;
+
+function initAudio() {
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    audioCtx = new AudioContext();
+    
+    // Global Master FX
+    const masterGain = audioCtx.createGain();
+    masterGain.gain.value = 0.6;
+    
+    // Analyser for visualization
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 256;
+    analyser.smoothingTimeConstant = 0.8;
+    dataArray = new Uint8Array(analyser.frequencyBinCount);
+    
+    masterGain.connect(analyser);
+    analyser.connect(audioCtx.destination);
+
+    // Sequencer State
+    const bpm = 128;
+    const stepTime = 60 / bpm / 4; // 16th note duration
+    let nextStepTime = audioCtx.currentTime;
+    let stepCount = 0;
+
+    // Generate White Noise Buffer for HiHats/Snares
+    const bufferSize = audioCtx.sampleRate * 2; // 2 seconds
+    const noiseBuffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+    const output = noiseBuffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) {
+        output[i] = Math.random() * 2 - 1;
+    }
+
+    // Scheduler Loop
+    setInterval(() => {
+        while (nextStepTime < audioCtx.currentTime + 0.1) {
+            playStep(stepCount, nextStepTime, noiseBuffer, masterGain);
+            nextStepTime += stepTime;
+            stepCount++;
+        }
+    }, 25);
+}
+
+function playStep(step, time, noiseBuffer, destination) {
+    const beat = step % 16;
+
+    // KICK: Steps 0, 4, 8, 12
+    if (beat % 4 === 0) {
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        
+        osc.connect(gain);
+        gain.connect(destination);
+        
+        osc.frequency.setValueAtTime(150, time);
+        osc.frequency.exponentialRampToValueAtTime(0.01, time + 0.5);
+        
+        gain.gain.setValueAtTime(1, time);
+        gain.gain.exponentialRampToValueAtTime(0.001, time + 0.5);
+        
+        osc.start(time);
+        osc.stop(time + 0.5);
+    }
+
+    // HI-HAT: Steps 2, 6, 10, 14 (Open/Closed mix)
+    if (beat % 4 === 2 || beat % 16 === 13 || beat % 16 === 15) {
+        const source = audioCtx.createBufferSource();
+        source.buffer = noiseBuffer;
+        const filter = audioCtx.createBiquadFilter();
+        filter.type = "highpass";
+        filter.frequency.value = 5000;
+        const gain = audioCtx.createGain();
+        
+        source.connect(filter);
+        filter.connect(gain);
+        gain.connect(destination);
+        
+        const len = (beat % 4 === 2) ? 0.1 : 0.05;
+        
+        gain.gain.setValueAtTime(0.3, time);
+        gain.gain.exponentialRampToValueAtTime(0.01, time + len);
+        
+        source.start(time);
+        source.stop(time + len);
+    }
+
+    // BASS: Rolling, sidechained manually by volume ducking or just off-beat placement
+    // Playing on: 1, 2, 3, 5, 6, 7... (Everything except the kick roughly)
+    if (beat % 4 !== 0) {
+        const osc = audioCtx.createOscillator();
+        osc.type = 'sawtooth';
+        const filter = audioCtx.createBiquadFilter();
+        filter.type = 'lowpass';
+        const gain = audioCtx.createGain();
+        
+        osc.connect(filter);
+        filter.connect(gain);
+        gain.connect(destination);
+        
+        // Note: F#1 (approx 46Hz)
+        osc.frequency.value = 46.25; 
+        
+        filter.frequency.setValueAtTime(200, time);
+        filter.frequency.exponentialRampToValueAtTime(800, time + 0.1);
+        filter.frequency.exponentialRampToValueAtTime(200, time + 0.2);
+
+        gain.gain.setValueAtTime(0, time);
+        gain.gain.linearRampToValueAtTime(0.4, time + 0.02);
+        gain.gain.linearRampToValueAtTime(0.0, time + 0.2);
+        
+        osc.start(time);
+        osc.stop(time + 0.25);
+    }
+}
+
+</script>
+</body>
+</html>

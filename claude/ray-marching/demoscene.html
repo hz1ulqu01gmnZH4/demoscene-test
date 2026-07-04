@@ -1,0 +1,842 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ray Marching Demoscene</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #000;
+            overflow: hidden;
+            font-family: 'Courier New', monospace;
+            color: #0f0;
+        }
+        #canvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+        }
+        #controls {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 15px;
+            border: 1px solid #0f0;
+            font-size: 12px;
+            z-index: 100;
+        }
+        button {
+            background: #000;
+            color: #0f0;
+            border: 1px solid #0f0;
+            padding: 5px 10px;
+            margin: 5px 5px 5px 0;
+            cursor: pointer;
+            font-family: 'Courier New', monospace;
+        }
+        button:hover { background: #0f0; color: #000; }
+        input[type="range"] { width: 120px; vertical-align: middle; }
+        .control-group { margin: 8px 0; }
+        #info {
+            position: absolute;
+            bottom: 10px;
+            right: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 10px;
+            border: 1px solid #0f0;
+            font-size: 11px;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+
+    <div id="controls">
+        <div class="control-group">
+            <button id="playPause">⏸ PAUSE</button>
+            <button id="restart">↻ RESTART</button>
+            <button id="fullscreen">⛶ FULLSCREEN</button>
+        </div>
+        <div class="control-group">
+            Quality:
+            <button class="quality" data-quality="low">LOW</button>
+            <button class="quality active" data-quality="medium">MED</button>
+            <button class="quality" data-quality="high">HIGH</button>
+        </div>
+        <div class="control-group">
+            <label>Time: <input type="range" id="timeSlider" min="0" max="120" value="0" step="0.1"></label>
+            <span id="timeDisplay">0.0s</span>
+        </div>
+        <div class="control-group">
+            <label>Scene: <span id="sceneDisplay">1</span></label>
+        </div>
+    </div>
+
+    <div id="info">
+        <div>FPS: <span id="fps">60</span></div>
+        <div>Ray Steps: <span id="steps">256</span></div>
+    </div>
+
+    <script id="vertexShader" type="x-shader/x-vertex">
+        attribute vec2 position;
+        void main() {
+            gl_Position = vec4(position, 0.0, 1.0);
+        }
+    </script>
+
+    <script id="fragmentShader" type="x-shader/x-fragment">
+        precision highp float;
+
+        uniform vec2 u_resolution;
+        uniform float u_time;
+        uniform float u_quality;
+        uniform float u_bass;
+        uniform float u_treble;
+
+        const int MAX_STEPS = 256;
+        const float MIN_DIST = 0.001;
+        const float MAX_DIST = 100.0;
+        const float EPSILON = 0.0001;
+
+        // ============================================
+        // SDF PRIMITIVES
+        // ============================================
+
+        float sdSphere(vec3 p, float r) {
+            return length(p) - r;
+        }
+
+        float sdBox(vec3 p, vec3 b) {
+            vec3 d = abs(p) - b;
+            return min(max(d.x, max(d.y, d.z)), 0.0) + length(max(d, 0.0));
+        }
+
+        float sdTorus(vec3 p, vec2 t) {
+            vec2 q = vec2(length(p.xz) - t.x, p.y);
+            return length(q) - t.y;
+        }
+
+        float sdOctahedron(vec3 p, float s) {
+            p = abs(p);
+            float m = p.x + p.y + p.z - s;
+            vec3 q;
+            if(3.0*p.x < m) q = p.xyz;
+            else if(3.0*p.y < m) q = p.yzx;
+            else if(3.0*p.z < m) q = p.zxy;
+            else return m * 0.57735027;
+            float k = clamp(0.5*(q.z-q.y+s), 0.0, s);
+            return length(vec3(q.x, q.y-s+k, q.z-k));
+        }
+
+        // ============================================
+        // SDF OPERATIONS
+        // ============================================
+
+        float opUnion(float d1, float d2) {
+            return min(d1, d2);
+        }
+
+        float opSubtraction(float d1, float d2) {
+            return max(-d1, d2);
+        }
+
+        float opIntersection(float d1, float d2) {
+            return max(d1, d2);
+        }
+
+        float opSmoothUnion(float d1, float d2, float k) {
+            float h = clamp(0.5 + 0.5*(d2-d1)/k, 0.0, 1.0);
+            return mix(d2, d1, h) - k*h*(1.0-h);
+        }
+
+        // ============================================
+        // DOMAIN OPERATIONS
+        // ============================================
+
+        vec3 opRepeat(vec3 p, vec3 c) {
+            return mod(p + 0.5*c, c) - 0.5*c;
+        }
+
+        vec3 opTwist(vec3 p, float k) {
+            float c = cos(k*p.y);
+            float s = sin(k*p.y);
+            mat2 m = mat2(c, -s, s, c);
+            return vec3(m*p.xz, p.y);
+        }
+
+        vec3 opBend(vec3 p, float k) {
+            float c = cos(k*p.x);
+            float s = sin(k*p.x);
+            mat2 m = mat2(c, -s, s, c);
+            return vec3(m*p.xy, p.z);
+        }
+
+        // ============================================
+        // FRACTALS
+        // ============================================
+
+        float sdMandelbulb(vec3 pos) {
+            vec3 z = pos;
+            float dr = 1.0;
+            float r = 0.0;
+            float power = 8.0 + 4.0*sin(u_time*0.3);
+
+            for(int i = 0; i < 8; i++) {
+                r = length(z);
+                if(r > 2.0) break;
+
+                // Convert to polar coordinates
+                float theta = acos(z.z/r);
+                float phi = atan(z.y, z.x);
+                dr = pow(r, power-1.0)*power*dr + 1.0;
+
+                // Scale and rotate the point
+                float zr = pow(r, power);
+                theta = theta*power;
+                phi = phi*power;
+
+                // Convert back to cartesian coordinates
+                z = zr*vec3(sin(theta)*cos(phi), sin(phi)*sin(theta), cos(theta));
+                z += pos;
+            }
+            return 0.5*log(r)*r/dr;
+        }
+
+        float sdMengerSponge(vec3 p) {
+            float d = sdBox(p, vec3(1.0));
+            float s = 1.0;
+
+            for(int m = 0; m < 4; m++) {
+                vec3 a = mod(p*s, 2.0) - 1.0;
+                s *= 3.0;
+                vec3 r = abs(1.0 - 3.0*abs(a));
+                float da = max(r.x, r.y);
+                float db = max(r.y, r.z);
+                float dc = max(r.z, r.x);
+                float c = (min(da, min(db, dc)) - 1.0)/s;
+                d = max(d, c);
+            }
+            return d;
+        }
+
+        // ============================================
+        // SCENE DEFINITIONS
+        // ============================================
+
+        vec2 scene1(vec3 p) {
+            // Intro: Rotating geometric primitives
+            vec3 p1 = p;
+            p1.xz *= mat2(cos(u_time*0.5), -sin(u_time*0.5), sin(u_time*0.5), cos(u_time*0.5));
+            float sphere = sdSphere(p1, 1.0 + 0.3*sin(u_time*2.0 + u_bass*2.0));
+
+            vec3 p2 = p;
+            p2.xy *= mat2(cos(u_time*0.7), -sin(u_time*0.7), sin(u_time*0.7), cos(u_time*0.7));
+            float box = sdBox(p2, vec3(0.8));
+
+            float d = opSmoothUnion(sphere, box, 0.3);
+            return vec2(d, 1.0); // material ID 1
+        }
+
+        vec2 scene2(vec3 p) {
+            // Fractal dive: Mandelbulb
+            vec3 p1 = p;
+            p1.y -= sin(u_time*0.5)*2.0;
+            float d = sdMandelbulb(p1*0.5)*2.0;
+            return vec2(d, 2.0);
+        }
+
+        vec2 scene3(vec3 p) {
+            // Infinite grid with domain repetition
+            vec3 p1 = opRepeat(p + vec3(0, 0, u_time*2.0), vec3(4.0));
+            p1 = opTwist(p1, sin(u_time*0.5)*0.5);
+            float sphere = sdSphere(p1, 0.5 + 0.2*sin(u_time*3.0 + u_treble));
+
+            vec3 p2 = opRepeat(p + vec3(2, 2, u_time*2.0), vec3(4.0));
+            float box = sdBox(p2, vec3(0.4));
+
+            float d = opSmoothUnion(sphere, box, 0.4);
+            return vec2(d, 3.0);
+        }
+
+        vec2 scene4(vec3 p) {
+            // Twisted reality with domain distortion
+            vec3 p1 = p;
+            p1 = opTwist(p1, sin(u_time*0.3)*2.0 + length(p1)*0.3);
+            p1.x += sin(p1.z*2.0 + u_time)*0.5;
+            p1.y += cos(p1.z*2.0 + u_time)*0.5;
+
+            float torus = sdTorus(p1, vec2(2.0, 0.5));
+            float oct = sdOctahedron(p1, 1.0);
+
+            float d = opSmoothUnion(torus, oct, 0.5);
+            return vec2(d, 4.0);
+        }
+
+        vec2 scene5(vec3 p) {
+            // Menger sponge
+            vec3 p1 = p;
+            p1.xz *= mat2(cos(u_time*0.3), -sin(u_time*0.3), sin(u_time*0.3), cos(u_time*0.3));
+            p1.xy *= mat2(cos(u_time*0.2), -sin(u_time*0.2), sin(u_time*0.2), cos(u_time*0.2));
+            float d = sdMengerSponge(p1*0.7);
+            return vec2(d, 5.0);
+        }
+
+        vec2 scene6(vec3 p) {
+            // Finale: Combined effects
+            vec3 p1 = opRepeat(p + vec3(0, 0, u_time*3.0), vec3(6.0));
+            p1 = opTwist(p1, u_time*0.5 + length(p)*0.2);
+
+            float sphere = sdSphere(p1, 0.8 + 0.4*sin(u_time*4.0 + u_bass*3.0));
+            float oct = sdOctahedron(p1, 0.6);
+
+            float d = opSmoothUnion(sphere, oct, 0.4 + 0.2*sin(u_time*2.0));
+            return vec2(d, 6.0);
+        }
+
+        vec2 map(vec3 p) {
+            float sceneTime = mod(u_time, 60.0); // 60 seconds per cycle
+
+            if(sceneTime < 10.0) return scene1(p);
+            else if(sceneTime < 20.0) return scene2(p);
+            else if(sceneTime < 30.0) return scene3(p);
+            else if(sceneTime < 40.0) return scene4(p);
+            else if(sceneTime < 50.0) return scene5(p);
+            else return scene6(p);
+        }
+
+        // ============================================
+        // RAY MARCHING
+        // ============================================
+
+        vec2 rayMarch(vec3 ro, vec3 rd) {
+            float depth = 0.0;
+            float matID = 0.0;
+            int maxSteps = int(u_quality);
+
+            for(int i = 0; i < MAX_STEPS; i++) {
+                if(i >= maxSteps) break;
+
+                vec3 pos = ro + depth * rd;
+                vec2 hit = map(pos);
+                float dist = hit.x;
+                matID = hit.y;
+
+                if(dist < MIN_DIST) break;
+                if(depth > MAX_DIST) {
+                    depth = MAX_DIST;
+                    break;
+                }
+
+                depth += dist;
+            }
+
+            return vec2(depth, matID);
+        }
+
+        // ============================================
+        // LIGHTING
+        // ============================================
+
+        vec3 calcNormal(vec3 p) {
+            vec2 e = vec2(EPSILON, 0.0);
+            return normalize(vec3(
+                map(p + e.xyy).x - map(p - e.xyy).x,
+                map(p + e.yxy).x - map(p - e.yxy).x,
+                map(p + e.yyx).x - map(p - e.yyx).x
+            ));
+        }
+
+        float calcAO(vec3 p, vec3 n) {
+            float occ = 0.0;
+            float sca = 1.0;
+            for(int i = 0; i < 5; i++) {
+                float h = 0.01 + 0.12*float(i)/4.0;
+                float d = map(p + h*n).x;
+                occ += (h-d)*sca;
+                sca *= 0.95;
+            }
+            return clamp(1.0 - 3.0*occ, 0.0, 1.0);
+        }
+
+        float calcSoftShadow(vec3 ro, vec3 rd, float mint, float maxt) {
+            float res = 1.0;
+            float t = mint;
+            for(int i = 0; i < 16; i++) {
+                float h = map(ro + rd*t).x;
+                res = min(res, 8.0*h/t);
+                t += clamp(h, 0.02, 0.10);
+                if(h < 0.001 || t > maxt) break;
+            }
+            return clamp(res, 0.0, 1.0);
+        }
+
+        vec3 getMaterial(float matID, vec3 p, vec3 n) {
+            vec3 col = vec3(0.5);
+
+            if(matID < 1.5) {
+                // Scene 1: Cyan/Magenta
+                col = vec3(0.0, 1.0, 1.0);
+            } else if(matID < 2.5) {
+                // Scene 2: Purple/Pink
+                col = vec3(0.8, 0.2, 1.0);
+            } else if(matID < 3.5) {
+                // Scene 3: Green/Yellow
+                col = mix(vec3(0.0, 1.0, 0.3), vec3(1.0, 1.0, 0.0),
+                         0.5 + 0.5*sin(p.x*3.0 + u_time));
+            } else if(matID < 4.5) {
+                // Scene 4: Orange/Red
+                col = vec3(1.0, 0.5, 0.0);
+            } else if(matID < 5.5) {
+                // Scene 5: Blue/White
+                col = vec3(0.2, 0.5, 1.0);
+            } else {
+                // Scene 6: Rainbow
+                col = 0.5 + 0.5*cos(u_time + p.xyx + vec3(0,2,4));
+            }
+
+            return col;
+        }
+
+        vec3 render(vec3 ro, vec3 rd) {
+            vec3 col = vec3(0.0);
+
+            vec2 hit = rayMarch(ro, rd);
+            float depth = hit.x;
+            float matID = hit.y;
+
+            if(depth < MAX_DIST) {
+                vec3 p = ro + rd * depth;
+                vec3 n = calcNormal(p);
+
+                // Material
+                vec3 mate = getMaterial(matID, p, n);
+
+                // Lighting
+                vec3 lightPos = vec3(5.0*sin(u_time*0.5), 5.0, 5.0*cos(u_time*0.5));
+                vec3 lightDir = normalize(lightPos - p);
+
+                // Diffuse
+                float diff = clamp(dot(n, lightDir), 0.0, 1.0);
+
+                // Specular
+                vec3 viewDir = normalize(ro - p);
+                vec3 halfDir = normalize(lightDir + viewDir);
+                float spec = pow(clamp(dot(n, halfDir), 0.0, 1.0), 32.0);
+
+                // Shadows
+                float shadow = calcSoftShadow(p + n*0.01, lightDir, 0.02, 10.0);
+
+                // Ambient occlusion
+                float ao = calcAO(p, n);
+
+                // Combine
+                vec3 ambient = vec3(0.1, 0.1, 0.15) * ao;
+                vec3 diffuse = mate * diff * shadow;
+                vec3 specular = vec3(1.0) * spec * shadow;
+
+                col = ambient + diffuse + specular * 0.5;
+
+                // Fog
+                float fogAmount = 1.0 - exp(-depth * 0.05);
+                vec3 fogColor = vec3(0.02, 0.02, 0.05);
+                col = mix(col, fogColor, fogAmount);
+            } else {
+                // Background gradient
+                col = mix(vec3(0.02, 0.02, 0.05), vec3(0.0, 0.0, 0.0), rd.y*0.5+0.5);
+            }
+
+            return col;
+        }
+
+        void main() {
+            vec2 uv = (gl_FragCoord.xy - 0.5*u_resolution.xy) / u_resolution.y;
+
+            // Camera setup
+            float camDist = 5.0 + 2.0*sin(u_time*0.3);
+            float camAngle = u_time * 0.2;
+            vec3 ro = vec3(camDist*cos(camAngle), 2.0*sin(u_time*0.15), camDist*sin(camAngle));
+            vec3 target = vec3(0.0, 0.0, 0.0);
+
+            vec3 forward = normalize(target - ro);
+            vec3 right = normalize(cross(vec3(0.0, 1.0, 0.0), forward));
+            vec3 up = cross(forward, right);
+
+            vec3 rd = normalize(forward + uv.x*right + uv.y*up);
+
+            // Render
+            vec3 col = render(ro, rd);
+
+            // Post-processing: Vignette
+            float vignette = 1.0 - 0.5*length(uv);
+            col *= vignette;
+
+            // Post-processing: Film grain
+            float grain = fract(sin(dot(gl_FragCoord.xy + u_time, vec2(12.9898, 78.233))) * 43758.5453);
+            col += (grain - 0.5) * 0.05;
+
+            // Gamma correction
+            col = pow(col, vec3(0.4545));
+
+            gl_FragColor = vec4(col, 1.0);
+        }
+    </script>
+
+    <script>
+        // ============================================
+        // WEBGL SETUP
+        // ============================================
+
+        const canvas = document.getElementById('canvas');
+        const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+
+        if(!gl) {
+            alert('WebGL not supported!');
+            throw new Error('WebGL not supported');
+        }
+
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            gl.viewport(0, 0, canvas.width, canvas.height);
+        }
+        resizeCanvas();
+        window.addEventListener('resize', resizeCanvas);
+
+        // ============================================
+        // SHADER COMPILATION
+        // ============================================
+
+        function createShader(gl, type, source) {
+            const shader = gl.createShader(type);
+            gl.shaderSource(shader, source);
+            gl.compileShader(shader);
+
+            if(!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                console.error('Shader compilation error:', gl.getShaderInfoLog(shader));
+                gl.deleteShader(shader);
+                return null;
+            }
+            return shader;
+        }
+
+        function createProgram(gl, vertexShader, fragmentShader) {
+            const program = gl.createProgram();
+            gl.attachShader(program, vertexShader);
+            gl.attachShader(program, fragmentShader);
+            gl.linkProgram(program);
+
+            if(!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+                console.error('Program linking error:', gl.getProgramInfoLog(program));
+                gl.deleteProgram(program);
+                return null;
+            }
+            return program;
+        }
+
+        const vertSource = document.getElementById('vertexShader').textContent;
+        const fragSource = document.getElementById('fragmentShader').textContent;
+
+        const vertShader = createShader(gl, gl.VERTEX_SHADER, vertSource);
+        const fragShader = createShader(gl, gl.FRAGMENT_SHADER, fragSource);
+        const program = createProgram(gl, vertShader, fragShader);
+
+        // ============================================
+        // BUFFERS AND ATTRIBUTES
+        // ============================================
+
+        const positionBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+            -1, -1,
+             1, -1,
+            -1,  1,
+             1,  1
+        ]), gl.STATIC_DRAW);
+
+        const positionLocation = gl.getAttribLocation(program, 'position');
+        gl.enableVertexAttribArray(positionLocation);
+        gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
+
+        // ============================================
+        // UNIFORMS
+        // ============================================
+
+        gl.useProgram(program);
+
+        const u_resolution = gl.getUniformLocation(program, 'u_resolution');
+        const u_time = gl.getUniformLocation(program, 'u_time');
+        const u_quality = gl.getUniformLocation(program, 'u_quality');
+        const u_bass = gl.getUniformLocation(program, 'u_bass');
+        const u_treble = gl.getUniformLocation(program, 'u_treble');
+
+        // ============================================
+        // STATE
+        // ============================================
+
+        let state = {
+            time: 0,
+            startTime: Date.now(),
+            paused: false,
+            quality: 256,
+            bass: 0,
+            treble: 0,
+            fps: 60,
+            manualTime: false
+        };
+
+        // ============================================
+        // AUDIO SYNTHESIS (Demoscene-style music)
+        // ============================================
+
+        let audioContext, bassOsc, melodyOsc, padOsc, analyzer, bassGain, melodyGain, padGain;
+        let beatInterval, melodyInterval;
+
+        function initAudio() {
+            try {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                analyzer = audioContext.createAnalyser();
+                analyzer.fftSize = 256;
+                const bufferLength = analyzer.frequencyBinCount;
+                const dataArray = new Uint8Array(bufferLength);
+
+                // Master gain
+                const masterGain = audioContext.createGain();
+                masterGain.gain.value = 0.3;
+                masterGain.connect(audioContext.destination);
+
+                // Bass synthesizer (kick drum)
+                bassOsc = audioContext.createOscillator();
+                bassOsc.type = 'sine';
+                bassOsc.frequency.value = 60;
+
+                bassGain = audioContext.createGain();
+                bassGain.gain.value = 0;
+
+                bassOsc.connect(bassGain);
+                bassGain.connect(analyzer);
+                bassGain.connect(masterGain);
+                bassOsc.start();
+
+                // Melody synthesizer
+                melodyOsc = audioContext.createOscillator();
+                melodyOsc.type = 'square';
+                melodyOsc.frequency.value = 440;
+
+                melodyGain = audioContext.createGain();
+                melodyGain.gain.value = 0;
+
+                const melodyFilter = audioContext.createBiquadFilter();
+                melodyFilter.type = 'lowpass';
+                melodyFilter.frequency.value = 2000;
+
+                melodyOsc.connect(melodyGain);
+                melodyGain.connect(melodyFilter);
+                melodyFilter.connect(analyzer);
+                melodyFilter.connect(masterGain);
+                melodyOsc.start();
+
+                // Pad synthesizer (ambient)
+                padOsc = audioContext.createOscillator();
+                padOsc.type = 'sawtooth';
+                padOsc.frequency.value = 110;
+
+                padGain = audioContext.createGain();
+                padGain.gain.value = 0.1;
+
+                const padFilter = audioContext.createBiquadFilter();
+                padFilter.type = 'lowpass';
+                padFilter.frequency.value = 800;
+                padFilter.Q.value = 2;
+
+                padOsc.connect(padGain);
+                padGain.connect(padFilter);
+                padFilter.connect(masterGain);
+                padOsc.start();
+
+                // Bass drum pattern (120 BPM)
+                beatInterval = setInterval(() => {
+                    if(!state.paused && audioContext.state === 'running') {
+                        const now = audioContext.currentTime;
+
+                        // Kick drum envelope
+                        bassGain.gain.cancelScheduledValues(now);
+                        bassGain.gain.setValueAtTime(0.8, now);
+                        bassGain.gain.exponentialRampToValueAtTime(0.01, now + 0.15);
+
+                        bassOsc.frequency.cancelScheduledValues(now);
+                        bassOsc.frequency.setValueAtTime(150, now);
+                        bassOsc.frequency.exponentialRampToValueAtTime(40, now + 0.1);
+
+                        // Update visual reactive value
+                        state.bass = 1.0;
+                        setTimeout(() => { state.bass = 0; }, 150);
+                    }
+                }, 500); // 120 BPM
+
+                // Melody pattern (pentatonic scale)
+                const notes = [261.63, 293.66, 329.63, 392.00, 440.00]; // C, D, E, G, A
+                let noteIndex = 0;
+
+                melodyInterval = setInterval(() => {
+                    if(!state.paused && audioContext.state === 'running') {
+                        const now = audioContext.currentTime;
+
+                        // Melody note
+                        melodyOsc.frequency.setValueAtTime(notes[noteIndex], now);
+
+                        melodyGain.gain.cancelScheduledValues(now);
+                        melodyGain.gain.setValueAtTime(0.15, now);
+                        melodyGain.gain.exponentialRampToValueAtTime(0.01, now + 0.2);
+
+                        noteIndex = (noteIndex + 1) % notes.length;
+                    }
+                }, 250); // Eighth notes
+
+                // Analyze audio for reactive values
+                setInterval(() => {
+                    if(!state.paused) {
+                        analyzer.getByteFrequencyData(dataArray);
+
+                        // Bass (low frequencies 0-5)
+                        let bassSum = 0;
+                        for(let i = 0; i < 5; i++) bassSum += dataArray[i];
+                        state.bass = (bassSum / (5 * 255)) * 2.0;
+
+                        // Treble (high frequencies 20-40)
+                        let trebleSum = 0;
+                        for(let i = 20; i < 40; i++) trebleSum += dataArray[i];
+                        state.treble = (trebleSum / (20 * 255)) * 1.5;
+                    }
+                }, 50);
+
+                console.log('Audio initialized successfully');
+
+            } catch(e) {
+                console.warn('Audio not available:', e);
+            }
+        }
+
+        function stopAudio() {
+            if(beatInterval) clearInterval(beatInterval);
+            if(melodyInterval) clearInterval(melodyInterval);
+            if(bassOsc) bassOsc.stop();
+            if(melodyOsc) melodyOsc.stop();
+            if(padOsc) padOsc.stop();
+        }
+
+        // Initialize audio on first user interaction
+        let audioInitialized = false;
+        function ensureAudio() {
+            if(!audioInitialized) {
+                initAudio();
+                audioInitialized = true;
+            }
+        }
+
+        // ============================================
+        // RENDER LOOP
+        // ============================================
+
+        let lastTime = Date.now();
+        let frameCount = 0;
+        let fpsUpdateTime = Date.now();
+
+        function render() {
+            const now = Date.now();
+            const deltaTime = (now - lastTime) / 1000;
+            lastTime = now;
+
+            if(!state.paused && !state.manualTime) {
+                state.time += deltaTime;
+            }
+
+            // FPS calculation
+            frameCount++;
+            if(now - fpsUpdateTime > 1000) {
+                state.fps = Math.round(frameCount * 1000 / (now - fpsUpdateTime));
+                frameCount = 0;
+                fpsUpdateTime = now;
+                document.getElementById('fps').textContent = state.fps;
+                document.getElementById('steps').textContent = state.quality;
+            }
+
+            // Update uniforms
+            gl.uniform2f(u_resolution, canvas.width, canvas.height);
+            gl.uniform1f(u_time, state.time);
+            gl.uniform1f(u_quality, state.quality);
+            gl.uniform1f(u_bass, state.bass);
+            gl.uniform1f(u_treble, state.treble);
+
+            // Draw
+            gl.clear(gl.COLOR_BUFFER_BIT);
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+            // Update UI
+            const sceneNum = Math.floor((state.time % 60) / 10) + 1;
+            document.getElementById('sceneDisplay').textContent = sceneNum;
+
+            if(!state.manualTime) {
+                document.getElementById('timeSlider').value = state.time;
+                document.getElementById('timeDisplay').textContent = state.time.toFixed(1) + 's';
+            }
+
+            requestAnimationFrame(render);
+        }
+
+        // ============================================
+        // CONTROLS
+        // ============================================
+
+        document.getElementById('playPause').addEventListener('click', () => {
+            ensureAudio();
+            state.paused = !state.paused;
+            document.getElementById('playPause').textContent = state.paused ? '▶ PLAY' : '⏸ PAUSE';
+        });
+
+        document.getElementById('restart').addEventListener('click', () => {
+            ensureAudio();
+            state.time = 0;
+            state.manualTime = false;
+        });
+
+        document.getElementById('fullscreen').addEventListener('click', () => {
+            ensureAudio();
+            if(!document.fullscreenElement) {
+                document.documentElement.requestFullscreen();
+            } else {
+                document.exitFullscreen();
+            }
+        });
+
+        document.querySelectorAll('.quality').forEach(btn => {
+            btn.addEventListener('click', () => {
+                ensureAudio();
+                document.querySelectorAll('.quality').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+
+                const quality = btn.dataset.quality;
+                if(quality === 'low') state.quality = 128;
+                else if(quality === 'medium') state.quality = 256;
+                else if(quality === 'high') state.quality = 512;
+            });
+        });
+
+        const timeSlider = document.getElementById('timeSlider');
+        timeSlider.addEventListener('input', () => {
+            ensureAudio();
+            state.manualTime = true;
+            state.time = parseFloat(timeSlider.value);
+            document.getElementById('timeDisplay').textContent = state.time.toFixed(1) + 's';
+        });
+
+        timeSlider.addEventListener('change', () => {
+            state.manualTime = false;
+        });
+
+        // Start rendering
+        render();
+    </script>
+</body>
+</html>

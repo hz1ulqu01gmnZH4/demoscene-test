@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Lumina Echo Demoscene</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: black; }
+        canvas { display: block; }
+        #overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background-color: rgba(0, 0, 0, 0.7);
+            color: white;
+            font-family: monospace;
+            font-size: 2em;
+            cursor: pointer;
+            z-index: 1000;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="demosceneCanvas"></canvas>
+    <div id="overlay">Click to Start</div>
+
+    <script>
+        const canvas = document.getElementById('demosceneCanvas');
+        const overlay = document.getElementById('overlay');
+        let gl;
+        let program;
+        let audioContext;
+        let analyser;
+        let dataArray;
+        let bassUniformLocation;
+        let startTime = 0;
+        let animationFrameId;
+
+        const BPM = 120;
+        const SEC_PER_BEAT = 60 / BPM;
+
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            gl.viewport(0, 0, canvas.width, canvas.height);
+        }
+
+        overlay.addEventListener('click', init);
+
+        function init() {
+            overlay.style.display = 'none';
+            initWebGL();
+            initAudio();
+            startTime = performance.now();
+            requestAnimationFrame(animate);
+            window.addEventListener('resize', resizeCanvas);
+        }
+
+        function initWebGL() {
+            gl = canvas.getContext('webgl');
+            if (!gl) {
+                console.error('WebGL not supported');
+                return;
+            }
+
+            // Vertex Shader: A simple passthrough shader that creates a full-screen quad
+            const vsSource = `
+                attribute vec4 a_position;
+                void main() {
+                    gl_Position = a_position;
+                }
+            `;
+
+            // Fragment Shader: Ray-marching demoscene
+            const fsSource = `
+                precision highp float;
+                uniform float iTime;
+                uniform vec2 iResolution;
+                uniform float iAudioBass;
+
+                // --- Math Functions ---
+                mat3 rotateX(float angle) {
+                    float c = cos(angle);
+                    float s = sin(angle);
+                    return mat3(
+                        1.0, 0.0, 0.0,
+                        0.0, c, -s,
+                        0.0, s, c
+                    );
+                }
+
+                mat3 rotateY(float angle) {
+                    float c = cos(angle);
+                    float s = sin(angle);
+                    return mat3(
+                        c, 0.0, s,
+                        0.0, 1.0, 0.0,
+                        -s, 0.0, c
+                    );
+                }
+
+                mat3 rotateZ(float angle) {
+                    float c = cos(angle);
+                    float s = sin(angle);
+                    return mat3(
+                        c, -s, 0.0,
+                        s, c, 0.0,
+                        0.0, 0.0, 1.0
+                    );
+                }
+
+                // --- SDF Primitives ---
+                float sdSphere(vec3 p, float s) {
+                    return length(p) - s;
+                }
+
+                float sdBox(vec3 p, vec3 b) {
+                    vec3 q = abs(p) - b;
+                    return length(max(vec3(0.0), q)) + min(0.0, max(q.x, max(q.y, q.z)));
+                }
+
+                float sdPlane(vec3 p, vec3 n, float h) {
+                    return dot(p, n) + h;
+                }
+
+                float opUnion(float d1, float d2) { return min(d1, d2); }
+                float opSubtract(float d1, float d2) { return max(d1, -d2); }
+                float opIntersect(float d1, float d2) { return max(d1, d2); }
+
+                // --- Scene Definition ---
+                float map(vec3 p) {
+                    float d = 1e10; // Initialize with a very large distance
+
+                    // Ground plane
+                    d = opUnion(d, sdPlane(p, vec3(0.0, 1.0, 0.0), 2.0));
+
+                    // Pulsing sphere reacts to bass and time
+                    d = opUnion(d, sdSphere(p - vec3(0.0, sin(iTime * 1.5) * 0.5, 0.0), 1.0 + sin(iTime * 0.7) * 0.2 + iAudioBass * 0.7));
+
+                    // Moving boxes
+                    vec3 pBox1 = p - vec3(sin(iTime * 1.2) * 4.0, 0.5 + cos(iTime * 0.8) * 0.5, cos(iTime * 1.1) * 4.0);
+                    d = opUnion(d, sdBox(pBox1, vec3(0.8)));
+
+                    vec3 pBox2 = p - vec3(cos(iTime * 0.9) * 5.0, 1.0 + sin(iTime * 1.3) * 0.7, sin(iTime * 1.0) * 5.0);
+                    d = opUnion(d, sdBox(pBox2, vec3(0.6)));
+
+                    // Repeating pattern of spheres on a plane, reacting to bass and time
+                    vec3 pGrid = p;
+                    pGrid.xz = mod(pGrid.xz, 8.0) - 4.0; // Repeat every 8 units
+                    pGrid.y += 2.0 + iAudioBass * 0.5 + sin(iTime * 2.0) * 0.2; // Move up and down
+                    d = opUnion(d, sdSphere(pGrid - vec3(0.0, -2.0, 0.0), 0.5 + iAudioBass * 0.2));
+
+                    return d;
+                }
+
+                // --- Normal Calculation ---
+                vec3 calculateNormal(vec3 p) {
+                    vec2 e = vec2(0.001, 0.0);
+                    return normalize(vec3(
+                        map(p + e.xyy) - map(p - e.xyy),
+                        map(p + e.yxy) - map(p - e.yxy),
+                        map(p + e.yyx) - map(p - e.yyx)
+                    ));
+                }
+
+                // --- Ray Marching Loop ---
+                float rayMarch(vec3 ro, vec3 rd, float start, float end) {
+                    float depth = start;
+                    for (int i = 0; i < 100; i++) {
+                        vec3 p = ro + rd * depth;
+                        float dist = map(p);
+                        if (dist < 0.001) { // Hit
+                            return depth;
+                        }
+                        depth += dist;
+                        if (depth >= end) { // Miss
+                            return end;
+                        }
+                    }
+                    return end;
+                }
+
+                // --- Lighting ---
+                vec3 renderScene(vec3 ro, vec3 rd) {
+                    float t = rayMarch(ro, rd, 0.0, 100.0);
+
+                    if (t >= 100.0) { // No hit, render sky/background
+                        vec3 skyColor = mix(vec3(0.1, 0.2, 0.4), vec3(0.6, 0.7, 0.8), 0.5 + 0.5 * rd.y); // Nicer sky gradient
+                        return skyColor * (0.8 + 0.2 * sin(iTime * 0.5)); // Pulsating sky
+                    }
+
+                    vec3 p = ro + rd * t;
+                    vec3 normal = calculateNormal(p);
+
+                    // Dynamic light source
+                    vec3 lightPos = vec3(10.0 * sin(iTime * 0.7), 10.0, 10.0 * cos(iTime * 0.6));
+                    vec3 lightDir = normalize(lightPos - p);
+
+                    float diff = max(0.0, dot(normal, lightDir));
+                    vec3 viewDir = normalize(ro - p);
+                    vec3 reflectDir = reflect(-lightDir, normal);
+                    float spec = pow(max(0.0, dot(viewDir, reflectDir)), 64.0); // Sharper specular
+
+                    // Color palette based on position and time
+                    vec3 objectColor = 0.5 + 0.5 * cos(p * 0.3 + iTime * 0.5 + vec3(0.0, 2.0, 4.0));
+                    objectColor = mix(objectColor, vec3(0.8, 0.5, 0.2), iAudioBass); // Mix with warm color on bass hit
+
+                    vec3 ambientColor = vec3(0.1, 0.15, 0.2);
+                    vec3 diffuseColor = diff * objectColor;
+                    vec3 specularColor = spec * vec3(1.0, 0.9, 0.8);
+
+                    vec3 color = ambientColor + diffuseColor + specularColor;
+
+                    // Improved fog
+                    float fogDensity = 0.05; // Adjust for thicker/thinner fog
+                    float fogFactor = 1.0 - exp(-t * fogDensity);
+                    vec3 fogColor = vec3(0.1, 0.15, 0.25);
+                    color = mix(color, fogColor, fogFactor);
+
+                    return color;
+                }
+
+                void main() {
+                    vec2 uv = (gl_FragCoord.xy - 0.5 * iResolution.xy) / iResolution.y;
+
+                    // More dynamic camera setup
+                    vec3 ro = vec3(
+                        sin(iTime * 0.4) * 5.0,
+                        2.0 + cos(iTime * 0.3) * 1.5,
+                        -10.0 - iTime * 2.5
+                    ); // Camera origin, moving forward with some side-to-side and up-down motion
+                    vec3 target = vec3(0.0, 0.0, 0.0); // Look at center
+                    float roll = 0.1 * sin(iTime * 0.5 + iAudioBass * 0.5); // Camera roll reacts to audio
+
+                    vec3 forward = normalize(target - ro);
+                    vec3 right = normalize(cross(forward, vec3(0.0, 1.0, 0.0)));
+                    vec3 up = normalize(cross(right, forward));
+
+                    // Apply roll
+                    right = right * cos(roll) - up * sin(roll);
+                    up = right * sin(roll) + up * cos(roll);
+
+                    vec3 rd = normalize(uv.x * right + uv.y * up + 1.5 * forward); // Ray direction
+
+                    vec3 color = renderScene(ro, rd);
+
+                    gl_FragColor = vec4(color, 1.0);
+                }
+            `;
+
+            function createShader(gl, type, source) {
+                const shader = gl.createShader(type);
+                gl.shaderSource(shader, source);
+                gl.compileShader(shader);
+                if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                    console.error('An error occurred compiling the shaders: ' + gl.getShaderInfoLog(shader));
+                    gl.deleteShader(shader);
+                    return null;
+                }
+                return shader;
+            }
+
+            const vertexShader = createShader(gl, gl.VERTEX_SHADER, vsSource);
+            const fragmentShader = createShader(gl, gl.FRAGMENT_SHADER, fsSource);
+
+            program = gl.createProgram();
+            gl.attachShader(program, vertexShader);
+            gl.attachShader(program, fragmentShader);
+            gl.linkProgram(program);
+
+            if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+                console.error('Unable to initialize the shader program: ' + gl.getProgramInfoLog(program));
+                return;
+            }
+
+            gl.useProgram(program);
+
+            // Set up a full-screen quad
+            const positionBuffer = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+            const positions = [
+                -1.0, -1.0,
+                 1.0, -1.0,
+                -1.0,  1.0,
+                -1.0,  1.0,
+                 1.0, -1.0,
+                 1.0,  1.0,
+            ];
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW);
+
+            const positionAttributeLocation = gl.getAttribLocation(program, 'a_position');
+            gl.enableVertexAttribArray(positionAttributeLocation);
+            gl.vertexAttribPointer(positionAttributeLocation, 2, gl.FLOAT, false, 0, 0);
+
+            // Get uniform locations
+            program.iResolutionUniformLocation = gl.getUniformLocation(program, 'iResolution');
+            program.iTimeUniformLocation = gl.getUniformLocation(program, 'iTime');
+            bassUniformLocation = gl.getUniformLocation(program, 'iAudioBass'); // Get bass uniform location
+
+            resizeCanvas();
+        }
+
+        // --- Audio Functions ---
+        let nextNoteTime = 0.0;
+        const lookahead = 25.0; // milliseconds
+        const scheduleAheadTime = 0.1; // seconds
+
+        const kickPattern = [1, 0, 0, 0, 1, 0, 0, 0]; // On beat 1 and 5
+        const bassPattern = [
+            { beat: 0, note: 60 }, // C3
+            { beat: 1, note: 55 }, // F2
+            { beat: 2, note: 57 }, // G2
+            { beat: 3, note: 59 }, // B2
+            { beat: 4, note: 60 }, // C3
+            { beat: 5, note: 55 }, // F2
+            { beat: 6, note: 57 }, // G2
+            { beat: 7, note: 59 }, // B2
+        ];
+        let currentBeat = 0;
+
+        function playNote(time, frequency, duration, type, gainValue = 0.5) {
+            const osc = audioContext.createOscillator();
+            const gainNode = audioContext.createGain();
+
+            osc.type = type;
+            osc.frequency.setValueAtTime(frequency, time);
+            gainNode.gain.setValueAtTime(0.0, time);
+            gainNode.gain.linearRampToValueAtTime(gainValue, time + 0.01);
+            gainNode.gain.exponentialRampToValueAtTime(0.001, time + duration);
+
+            osc.connect(gainNode);
+            gainNode.connect(analyser);
+            analyser.connect(audioContext.destination);
+
+            osc.start(time);
+            osc.stop(time + duration);
+        }
+
+        function kick(time) {
+            const osc = audioContext.createOscillator();
+            const gainNode = audioContext.createGain();
+
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(150, time);
+            osc.frequency.exponentialRampToValueAtTime(30, time + 0.2);
+
+            gainNode.gain.setValueAtTime(1.0, time);
+            gainNode.gain.exponentialRampToValueAtTime(0.001, time + 0.3);
+
+            osc.connect(gainNode);
+            gainNode.connect(analyser);
+            analyser.connect(audioContext.destination);
+
+            osc.start(time);
+            osc.stop(time + 0.3);
+        }
+
+        function bass(time, midiNote) {
+            const freq = 440 * Math.pow(2, (midiNote - 69) / 12);
+            playNote(time, freq, SEC_PER_BEAT * 0.9, 'triangle', 0.4);
+        }
+
+        function lead(time, midiNote) {
+            const freq = 440 * Math.pow(2, (midiNote - 69) / 12);
+            playNote(time, freq, SEC_PER_BEAT * 0.7, 'sawtooth', 0.3);
+        }
+
+        function scheduleMusic() {
+            while (nextNoteTime < audioContext.currentTime + scheduleAheadTime) {
+                const beatTime = nextNoteTime;
+
+                // Kick drum
+                if (kickPattern[currentBeat % kickPattern.length] === 1) {
+                    kick(beatTime);
+                }
+
+                // Bassline
+                const bassNote = bassPattern[currentBeat % bassPattern.length];
+                bass(beatTime, bassNote.note);
+
+                // Simple lead synth (every 4 beats)
+                if (currentBeat % 4 === 0) {
+                    lead(beatTime, 72 + Math.floor(Math.random() * 7)); // C4 and some random notes
+                }
+
+                nextNoteTime += SEC_PER_BEAT; // Advance to the next beat
+                currentBeat++;
+            }
+            setTimeout(scheduleMusic, lookahead);
+        }
+
+        function initAudio() {
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            if (!audioContext) {
+                console.error('Web Audio API not supported');
+                return;
+            }
+
+            analyser = audioContext.createAnalyser();
+            analyser.fftSize = 256; // Smaller for faster updates
+            dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+            // Start scheduling music
+            nextNoteTime = audioContext.currentTime;
+            scheduleMusic();
+            console.log('Audio Context initialized and music scheduled.');
+        }
+
+        function animate() {
+            const currentTime = (performance.now() - startTime) * 0.001; // convert to seconds
+
+            gl.uniform2f(program.iResolutionUniformLocation, canvas.width, canvas.height);
+            gl.uniform1f(program.iTimeUniformLocation, currentTime);
+
+            // Get audio data for uniforms
+            analyser.getByteFrequencyData(dataArray);
+            let bassVolume = 0;
+            for (let i = 0; i < 5; i++) { // Check lower frequencies for bass
+                bassVolume += dataArray[i];
+            }
+            bassVolume = bassVolume / (5 * 255); // Normalize to 0-1
+            gl.uniform1f(bassUniformLocation, bassVolume);
+
+            gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+            animationFrameId = requestAnimationFrame(animate);
+        }
+    </script>
+</body>
+</html>

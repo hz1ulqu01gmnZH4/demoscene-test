@@ -1,0 +1,972 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Demoscene - Audio Visual Experience</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      background: #000;
+      font-family: 'Courier New', monospace;
+      color: #fff;
+    }
+
+    #canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      image-rendering: crisp-edges;
+      image-rendering: pixelated;
+    }
+
+    #ui {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      pointer-events: none;
+      z-index: 10;
+    }
+
+    #startBtn {
+      pointer-events: all;
+      padding: 20px 40px;
+      font-size: 24px;
+      font-weight: bold;
+      background: linear-gradient(45deg, #ff006e, #8338ec);
+      border: 3px solid #fff;
+      color: #fff;
+      cursor: pointer;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      transition: all 0.3s;
+      box-shadow: 0 0 20px rgba(255, 0, 110, 0.5);
+    }
+
+    #startBtn:hover {
+      transform: scale(1.1);
+      box-shadow: 0 0 40px rgba(255, 0, 110, 0.8);
+    }
+
+    #startBtn.hidden {
+      display: none;
+    }
+
+    #info {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      font-size: 12px;
+      text-shadow: 2px 2px 4px #000;
+      pointer-events: none;
+    }
+
+    #controls {
+      position: absolute;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 14px;
+      text-shadow: 2px 2px 4px #000;
+      pointer-events: none;
+      opacity: 0.7;
+    }
+
+    .fade-out {
+      animation: fadeOut 1s forwards;
+    }
+
+    @keyframes fadeOut {
+      to { opacity: 0; }
+    }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  <div id="ui">
+    <button id="startBtn">Start Experience</button>
+  </div>
+  <div id="info">
+    <div id="fps">FPS: 0</div>
+    <div id="scene">Scene: Loading...</div>
+  </div>
+  <div id="controls">
+    [SPACE] Pause | [F] Fullscreen | [R] Restart
+  </div>
+
+  <script>
+    'use strict';
+
+    // ============================================================================
+    // CONFIGURATION & CONSTANTS
+    // ============================================================================
+
+    const CONFIG = {
+      targetFPS: 60,
+      audioEnabled: true,
+      showFPS: true,
+      particleCount: 200,
+      metaballCount: 8,
+      starCount: 300
+    };
+
+    const SCENES = [
+      { name: 'Starfield Intro', duration: 5000, effect: 'starfield' },
+      { name: 'Plasma Dreams', duration: 10000, effect: 'plasma' },
+      { name: 'Tunnel Vision', duration: 10000, effect: 'tunnel' },
+      { name: 'Particle Storm', duration: 10000, effect: 'particles' },
+      { name: 'Metaball Fusion', duration: 10000, effect: 'metaballs' },
+      { name: 'Credits Roll', duration: 10000, effect: 'credits' },
+      { name: 'Outro', duration: 5000, effect: 'starfield' }
+    ];
+
+    // ============================================================================
+    // GLOBAL STATE
+    // ============================================================================
+
+    const state = {
+      canvas: null,
+      ctx: null,
+      width: 0,
+      height: 0,
+      time: 0,
+      deltaTime: 0,
+      lastTime: 0,
+      fps: 0,
+      fpsCounter: 0,
+      fpsLastUpdate: 0,
+      running: false,
+      paused: false,
+      audioContext: null,
+      audioStarted: false,
+      currentScene: 0,
+      sceneStartTime: 0,
+      sceneProgress: 0
+    };
+
+    // ============================================================================
+    // UTILITY FUNCTIONS
+    // ============================================================================
+
+    const lerp = (a, b, t) => a + (b - a) * t;
+
+    const clamp = (val, min, max) => Math.min(Math.max(val, min), max);
+
+    const map = (val, inMin, inMax, outMin, outMax) => {
+      return outMin + (outMax - outMin) * ((val - inMin) / (inMax - inMin));
+    };
+
+    const smoothstep = (t) => t * t * (3 - 2 * t);
+
+    const easeInOut = (t) => t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
+
+    const hslToRgb = (h, s, l) => {
+      const c = (1 - Math.abs(2 * l - 1)) * s;
+      const x = c * (1 - Math.abs((h / 60) % 2 - 1));
+      const m = l - c / 2;
+      let r, g, b;
+
+      if (h < 60) [r, g, b] = [c, x, 0];
+      else if (h < 120) [r, g, b] = [x, c, 0];
+      else if (h < 180) [r, g, b] = [0, c, x];
+      else if (h < 240) [r, g, b] = [0, x, c];
+      else if (h < 300) [r, g, b] = [x, 0, c];
+      else [r, g, b] = [c, 0, x];
+
+      return [
+        Math.floor((r + m) * 255),
+        Math.floor((g + m) * 255),
+        Math.floor((b + m) * 255)
+      ];
+    };
+
+    const rgbToHex = (r, g, b) => {
+      return '#' + [r, g, b].map(x => {
+        const hex = x.toString(16);
+        return hex.length === 1 ? '0' + hex : hex;
+      }).join('');
+    };
+
+    const randomRange = (min, max) => Math.random() * (max - min) + min;
+
+    // ============================================================================
+    // AUDIO ENGINE
+    // ============================================================================
+
+    const audio = {
+      ctx: null,
+      masterGain: null,
+      oscillators: [],
+      analyser: null,
+      dataArray: null,
+      bufferLength: 0,
+      bassFreq: 0,
+      midFreq: 0,
+      highFreq: 0,
+      beat: 0,
+      bpm: 130,
+
+      init() {
+        try {
+          this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+          this.masterGain = this.ctx.createGain();
+          this.masterGain.gain.value = 0.3;
+          this.masterGain.connect(this.ctx.destination);
+
+          // Create analyser for audio reactivity
+          this.analyser = this.ctx.createAnalyser();
+          this.analyser.fftSize = 256;
+          this.bufferLength = this.analyser.frequencyBinCount;
+          this.dataArray = new Uint8Array(this.bufferLength);
+          this.analyser.connect(this.masterGain);
+
+          state.audioContext = this.ctx;
+          return true;
+        } catch (e) {
+          console.error('Audio initialization failed:', e);
+          return false;
+        }
+      },
+
+      start() {
+        if (state.audioStarted) return;
+        if (!this.ctx) this.init();
+
+        // Bass line (kick drum pattern)
+        this.createBass();
+
+        // Lead melody
+        this.createMelody();
+
+        // Pad
+        this.createPad();
+
+        state.audioStarted = true;
+      },
+
+      createBass() {
+        const bass = this.ctx.createOscillator();
+        const bassGain = this.ctx.createGain();
+
+        bass.type = 'sine';
+        bass.frequency.value = 55; // A1
+
+        bassGain.gain.value = 0;
+
+        bass.connect(bassGain);
+        bassGain.connect(this.analyser);
+
+        bass.start();
+
+        // Kick pattern (4/4 beat)
+        const beatInterval = 60 / this.bpm;
+        const trigger = () => {
+          const now = this.ctx.currentTime;
+          bassGain.gain.cancelScheduledValues(now);
+          bassGain.gain.setValueAtTime(0.4, now);
+          bassGain.gain.exponentialRampToValueAtTime(0.01, now + 0.2);
+        };
+
+        setInterval(trigger, beatInterval * 1000);
+        this.oscillators.push(bass);
+      },
+
+      createMelody() {
+        const melody = this.ctx.createOscillator();
+        const melodyGain = this.ctx.createGain();
+        const filter = this.ctx.createBiquadFilter();
+
+        melody.type = 'square';
+        filter.type = 'lowpass';
+        filter.frequency.value = 1000;
+
+        melodyGain.gain.value = 0.15;
+
+        melody.connect(filter);
+        filter.connect(melodyGain);
+        melodyGain.connect(this.analyser);
+
+        // Arpeggio pattern (A minor pentatonic)
+        const notes = [220, 261.63, 293.66, 329.63, 440]; // A3, C4, D4, E4, A4
+        let noteIndex = 0;
+
+        melody.frequency.value = notes[0];
+        melody.start();
+
+        setInterval(() => {
+          noteIndex = (noteIndex + 1) % notes.length;
+          melody.frequency.setValueAtTime(notes[noteIndex], this.ctx.currentTime);
+        }, 250); // 16th notes at 130 BPM
+
+        this.oscillators.push(melody);
+      },
+
+      createPad() {
+        // Detuned oscillators for pad sound
+        const freqs = [220, 220.5, 219.5]; // Slightly detuned
+
+        freqs.forEach(freq => {
+          const osc = this.ctx.createOscillator();
+          const gain = this.ctx.createGain();
+          const filter = this.ctx.createBiquadFilter();
+
+          osc.type = 'sawtooth';
+          osc.frequency.value = freq;
+
+          filter.type = 'lowpass';
+          filter.frequency.value = 800;
+          filter.Q.value = 2;
+
+          gain.gain.value = 0.05;
+
+          osc.connect(filter);
+          filter.connect(gain);
+          gain.connect(this.analyser);
+
+          osc.start();
+          this.oscillators.push(osc);
+        });
+      },
+
+      getFrequencyData() {
+        if (!this.analyser) return;
+
+        this.analyser.getByteFrequencyData(this.dataArray);
+
+        // Calculate average frequencies for different bands
+        const third = Math.floor(this.bufferLength / 3);
+
+        this.bassFreq = 0;
+        this.midFreq = 0;
+        this.highFreq = 0;
+
+        for (let i = 0; i < third; i++) {
+          this.bassFreq += this.dataArray[i];
+        }
+        for (let i = third; i < third * 2; i++) {
+          this.midFreq += this.dataArray[i];
+        }
+        for (let i = third * 2; i < this.bufferLength; i++) {
+          this.highFreq += this.dataArray[i];
+        }
+
+        this.bassFreq /= (third * 255);
+        this.midFreq /= (third * 255);
+        this.highFreq /= (third * 255);
+
+        // Simple beat detection
+        this.beat = this.bassFreq > 0.3 ? 1 : 0;
+      },
+
+      stop() {
+        this.oscillators.forEach(osc => {
+          try { osc.stop(); } catch (e) {}
+        });
+        this.oscillators = [];
+        state.audioStarted = false;
+      }
+    };
+
+    // ============================================================================
+    // EFFECTS
+    // ============================================================================
+
+    // --- STARFIELD EFFECT ---
+    const starfield = {
+      stars: [],
+
+      init() {
+        this.stars = [];
+        for (let i = 0; i < CONFIG.starCount; i++) {
+          this.stars.push({
+            x: randomRange(-1, 1),
+            y: randomRange(-1, 1),
+            z: randomRange(0, 1),
+            speed: randomRange(0.3, 1)
+          });
+        }
+      },
+
+      update(dt) {
+        const speed = 0.5 * dt * 0.001;
+
+        this.stars.forEach(star => {
+          star.z -= speed * star.speed * (1 + audio.bassFreq);
+
+          if (star.z <= 0) {
+            star.x = randomRange(-1, 1);
+            star.y = randomRange(-1, 1);
+            star.z = 1;
+          }
+        });
+      },
+
+      render(ctx) {
+        const cx = state.width / 2;
+        const cy = state.height / 2;
+        const maxSize = Math.max(state.width, state.height);
+
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.1)';
+        ctx.fillRect(0, 0, state.width, state.height);
+
+        this.stars.forEach(star => {
+          const scale = 1 / star.z;
+          const x = cx + star.x * maxSize * scale;
+          const y = cy + star.y * maxSize * scale;
+          const size = scale * 2;
+          const brightness = 1 - star.z;
+
+          if (x < 0 || x > state.width || y < 0 || y > state.height) return;
+
+          const hue = (state.time * 0.05 + star.z * 360) % 360;
+          const [r, g, b] = hslToRgb(hue, 0.8, brightness * 0.5);
+
+          ctx.fillStyle = rgbToHex(r, g, b);
+          ctx.fillRect(x - size / 2, y - size / 2, size, size);
+        });
+      }
+    };
+
+    // --- PLASMA EFFECT ---
+    const plasma = {
+      imageData: null,
+      buffer: null,
+
+      init() {
+        this.imageData = state.ctx.createImageData(state.width, state.height);
+        this.buffer = new Uint32Array(this.imageData.data.buffer);
+      },
+
+      render(ctx) {
+        const t = state.time * 0.001;
+        const audioMod = 1 + audio.midFreq * 2;
+
+        for (let y = 0; y < state.height; y++) {
+          for (let x = 0; x < state.width; x++) {
+            const nx = x / state.width;
+            const ny = y / state.height;
+
+            // Plasma formula with multiple sine waves
+            const v1 = Math.sin(nx * 10 + t * audioMod);
+            const v2 = Math.sin(10 * (nx * Math.sin(t / 2) + ny * Math.cos(t / 3)) + t);
+            const v3 = Math.sin(Math.sqrt(100 * (nx * nx + ny * ny) + 1) + t);
+            const v4 = Math.sin(ny * 10 + t * audioMod);
+
+            const value = (v1 + v2 + v3 + v4) / 4;
+            const hue = (value * 180 + t * 50) % 360;
+            const [r, g, b] = hslToRgb(hue, 1, 0.5 + audio.bassFreq * 0.3);
+
+            const idx = y * state.width + x;
+            this.buffer[idx] = (255 << 24) | (b << 16) | (g << 8) | r;
+          }
+        }
+
+        ctx.putImageData(this.imageData, 0, 0);
+      }
+    };
+
+    // --- TUNNEL EFFECT ---
+    const tunnel = {
+      lookupX: null,
+      lookupY: null,
+      lookupD: null,
+
+      init() {
+        this.lookupX = new Float32Array(state.width * state.height);
+        this.lookupY = new Float32Array(state.width * state.height);
+        this.lookupD = new Float32Array(state.width * state.height);
+
+        const cx = state.width / 2;
+        const cy = state.height / 2;
+
+        for (let y = 0; y < state.height; y++) {
+          for (let x = 0; x < state.width; x++) {
+            const idx = y * state.width + x;
+            const dx = x - cx;
+            const dy = y - cy;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            const angle = Math.atan2(dy, dx);
+
+            this.lookupD[idx] = dist;
+            this.lookupX[idx] = angle / Math.PI;
+            this.lookupY[idx] = 1 / (dist + 1);
+          }
+        }
+      },
+
+      render(ctx) {
+        const imageData = ctx.createImageData(state.width, state.height);
+        const buffer = new Uint32Array(imageData.data.buffer);
+
+        const t = state.time * 0.001;
+        const shiftX = t * 0.5;
+        const shiftY = t * 1.5 + audio.bassFreq * 2;
+        const zoom = 1 + audio.highFreq;
+
+        for (let i = 0; i < buffer.length; i++) {
+          const u = (this.lookupX[i] + shiftX) * zoom;
+          const v = (this.lookupY[i] + shiftY) * zoom;
+
+          const hue = ((u + v) * 180 + t * 100) % 360;
+          const brightness = 0.5 + Math.sin(v * 20) * 0.3 + audio.midFreq * 0.3;
+          const [r, g, b] = hslToRgb(hue, 1, clamp(brightness, 0, 1));
+
+          buffer[i] = (255 << 24) | (b << 16) | (g << 8) | r;
+        }
+
+        ctx.putImageData(imageData, 0, 0);
+      }
+    };
+
+    // --- PARTICLE SYSTEM ---
+    const particles = {
+      pool: [],
+
+      init() {
+        this.pool = [];
+        for (let i = 0; i < CONFIG.particleCount; i++) {
+          this.pool.push({
+            x: randomRange(0, state.width),
+            y: randomRange(0, state.height),
+            vx: randomRange(-50, 50),
+            vy: randomRange(-50, 50),
+            life: Math.random(),
+            maxLife: randomRange(2, 5),
+            size: randomRange(2, 8),
+            hue: Math.random() * 360
+          });
+        }
+      },
+
+      update(dt) {
+        const deltaS = dt * 0.001;
+        const audioForce = audio.bassFreq * 200;
+
+        this.pool.forEach(p => {
+          p.life += deltaS;
+          if (p.life > p.maxLife) {
+            p.x = randomRange(0, state.width);
+            p.y = randomRange(0, state.height);
+            p.vx = randomRange(-50, 50);
+            p.vy = randomRange(-50, 50);
+            p.life = 0;
+            p.maxLife = randomRange(2, 5);
+            p.hue = Math.random() * 360;
+          }
+
+          // Attract to center with audio reactivity
+          const cx = state.width / 2;
+          const cy = state.height / 2;
+          const dx = cx - p.x;
+          const dy = cy - p.y;
+          const dist = Math.sqrt(dx * dx + dy * dy) + 1;
+
+          p.vx += (dx / dist) * audioForce * deltaS;
+          p.vy += (dy / dist) * audioForce * deltaS;
+
+          // Apply damping
+          p.vx *= 0.99;
+          p.vy *= 0.99;
+
+          p.x += p.vx * deltaS;
+          p.y += p.vy * deltaS;
+
+          // Wrap around
+          if (p.x < 0) p.x = state.width;
+          if (p.x > state.width) p.x = 0;
+          if (p.y < 0) p.y = state.height;
+          if (p.y > state.height) p.y = 0;
+        });
+      },
+
+      render(ctx) {
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.05)';
+        ctx.fillRect(0, 0, state.width, state.height);
+
+        this.pool.forEach(p => {
+          const alpha = 1 - (p.life / p.maxLife);
+          const hue = (p.hue + state.time * 0.1) % 360;
+          const [r, g, b] = hslToRgb(hue, 1, 0.5);
+
+          ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha})`;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, p.size * (1 + audio.highFreq), 0, Math.PI * 2);
+          ctx.fill();
+        });
+      }
+    };
+
+    // --- METABALLS EFFECT ---
+    const metaballs = {
+      balls: [],
+      imageData: null,
+      buffer: null,
+
+      init() {
+        this.balls = [];
+        for (let i = 0; i < CONFIG.metaballCount; i++) {
+          this.balls.push({
+            x: randomRange(0.2, 0.8),
+            y: randomRange(0.2, 0.8),
+            vx: randomRange(-0.2, 0.2),
+            vy: randomRange(-0.2, 0.2),
+            radius: randomRange(0.05, 0.15)
+          });
+        }
+
+        this.imageData = state.ctx.createImageData(state.width, state.height);
+        this.buffer = new Uint32Array(this.imageData.data.buffer);
+      },
+
+      update(dt) {
+        const deltaS = dt * 0.001;
+        const speed = 0.5 + audio.midFreq;
+
+        this.balls.forEach(ball => {
+          ball.x += ball.vx * deltaS * speed;
+          ball.y += ball.vy * deltaS * speed;
+
+          if (ball.x < 0 || ball.x > 1) ball.vx *= -1;
+          if (ball.y < 0 || ball.y > 1) ball.vy *= -1;
+
+          ball.x = clamp(ball.x, 0, 1);
+          ball.y = clamp(ball.y, 0, 1);
+        });
+      },
+
+      render(ctx) {
+        const threshold = 1.0;
+        const scale = Math.max(state.width, state.height);
+
+        for (let y = 0; y < state.height; y += 2) {
+          for (let x = 0; x < state.width; x += 2) {
+            const nx = x / scale;
+            const ny = y / scale;
+
+            let sum = 0;
+            this.balls.forEach(ball => {
+              const dx = nx - ball.x;
+              const dy = ny - ball.y;
+              const dist = Math.sqrt(dx * dx + dy * dy);
+              sum += ball.radius / (dist + 0.001);
+            });
+
+            if (sum > threshold) {
+              const hue = (sum * 100 + state.time * 0.1) % 360;
+              const brightness = clamp(sum / (threshold * 2), 0, 1);
+              const [r, g, b] = hslToRgb(hue, 1, brightness * 0.5);
+
+              const idx = y * state.width + x;
+              this.buffer[idx] = (255 << 24) | (b << 16) | (g << 8) | r;
+
+              // Fill neighboring pixels for performance
+              if (x + 1 < state.width) this.buffer[idx + 1] = this.buffer[idx];
+              if (y + 1 < state.height) {
+                this.buffer[idx + state.width] = this.buffer[idx];
+                if (x + 1 < state.width) this.buffer[idx + state.width + 1] = this.buffer[idx];
+              }
+            } else {
+              const idx = y * state.width + x;
+              this.buffer[idx] = 0xFF000000;
+              if (x + 1 < state.width) this.buffer[idx + 1] = 0xFF000000;
+              if (y + 1 < state.height) {
+                this.buffer[idx + state.width] = 0xFF000000;
+                if (x + 1 < state.width) this.buffer[idx + state.width + 1] = 0xFF000000;
+              }
+            }
+          }
+        }
+
+        ctx.putImageData(this.imageData, 0, 0);
+      }
+    };
+
+    // --- CREDITS EFFECT ---
+    const credits = {
+      lines: [
+        'DEMOSCENE EXPERIENCE',
+        '',
+        'CODE & VISUALS',
+        'Claude Code + Human',
+        '',
+        'EFFECTS',
+        'Starfield | Plasma | Tunnel',
+        'Particles | Metaballs',
+        '',
+        'AUDIO ENGINE',
+        'Web Audio API',
+        'Procedural Synthesis',
+        '',
+        'GREETINGS TO',
+        'All Demoscene Artists',
+        'Web Platform Pioneers',
+        '',
+        'BUILT WITH',
+        'Vanilla JavaScript',
+        'Canvas API',
+        'Pure Web Technologies',
+        '',
+        '- THE END -'
+      ],
+      scrollY: 0,
+
+      init() {
+        this.scrollY = state.height;
+      },
+
+      update(dt) {
+        const speed = 50 + audio.midFreq * 50;
+        this.scrollY -= speed * dt * 0.001;
+
+        if (this.scrollY < -this.lines.length * 50) {
+          this.scrollY = state.height;
+        }
+      },
+
+      render(ctx) {
+        // Background gradient
+        const gradient = ctx.createLinearGradient(0, 0, 0, state.height);
+        gradient.addColorStop(0, '#0a0a2e');
+        gradient.addColorStop(1, '#000000');
+        ctx.fillStyle = gradient;
+        ctx.fillRect(0, 0, state.width, state.height);
+
+        // Render text
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+
+        this.lines.forEach((line, i) => {
+          const y = this.scrollY + i * 50;
+
+          if (y < -50 || y > state.height + 50) return;
+
+          const alpha = Math.min(
+            (y + 50) / 100,
+            (state.height - y + 50) / 100,
+            1
+          );
+
+          const fontSize = line.length < 20 ? 32 : 20;
+          ctx.font = `bold ${fontSize}px 'Courier New', monospace`;
+
+          const hue = (state.time * 0.1 + i * 30) % 360;
+          const [r, g, b] = hslToRgb(hue, 0.8, 0.6);
+
+          // Glow effect
+          ctx.shadowBlur = 20 + audio.bassFreq * 30;
+          ctx.shadowColor = rgbToHex(r, g, b);
+          ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha})`;
+
+          ctx.fillText(line, state.width / 2, y);
+        });
+
+        ctx.shadowBlur = 0;
+      }
+    };
+
+    // ============================================================================
+    // SCENE MANAGER
+    // ============================================================================
+
+    const sceneManager = {
+      currentEffect: null,
+      transitionAlpha: 0,
+
+      init() {
+        this.loadScene(0);
+      },
+
+      loadScene(index) {
+        if (index >= SCENES.length) {
+          index = 0; // Loop back to start
+        }
+
+        state.currentScene = index;
+        state.sceneStartTime = state.time;
+
+        const scene = SCENES[index];
+        document.getElementById('scene').textContent = `Scene: ${scene.name}`;
+
+        // Initialize the effect
+        switch (scene.effect) {
+          case 'starfield':
+            starfield.init();
+            this.currentEffect = starfield;
+            break;
+          case 'plasma':
+            plasma.init();
+            this.currentEffect = plasma;
+            break;
+          case 'tunnel':
+            tunnel.init();
+            this.currentEffect = tunnel;
+            break;
+          case 'particles':
+            particles.init();
+            this.currentEffect = particles;
+            break;
+          case 'metaballs':
+            metaballs.init();
+            this.currentEffect = metaballs;
+            break;
+          case 'credits':
+            credits.init();
+            this.currentEffect = credits;
+            break;
+        }
+      },
+
+      update(dt) {
+        const scene = SCENES[state.currentScene];
+        const elapsed = state.time - state.sceneStartTime;
+        state.sceneProgress = elapsed / scene.duration;
+
+        // Check if scene is complete
+        if (elapsed >= scene.duration) {
+          this.loadScene(state.currentScene + 1);
+        }
+
+        // Update current effect
+        if (this.currentEffect && this.currentEffect.update) {
+          this.currentEffect.update(dt);
+        }
+      },
+
+      render(ctx) {
+        if (this.currentEffect && this.currentEffect.render) {
+          this.currentEffect.render(ctx);
+        }
+      }
+    };
+
+    // ============================================================================
+    // MAIN LOOP
+    // ============================================================================
+
+    function update(dt) {
+      if (state.paused) return;
+
+      audio.getFrequencyData();
+      sceneManager.update(dt);
+    }
+
+    function render() {
+      sceneManager.render(state.ctx);
+    }
+
+    function loop(timestamp) {
+      if (!state.running) return;
+
+      // Calculate delta time
+      state.deltaTime = timestamp - state.lastTime;
+      state.lastTime = timestamp;
+      state.time = timestamp;
+
+      // Update FPS
+      state.fpsCounter++;
+      if (timestamp - state.fpsLastUpdate > 1000) {
+        state.fps = state.fpsCounter;
+        state.fpsCounter = 0;
+        state.fpsLastUpdate = timestamp;
+
+        if (CONFIG.showFPS) {
+          document.getElementById('fps').textContent = `FPS: ${state.fps}`;
+        }
+      }
+
+      // Update and render
+      update(state.deltaTime);
+      render();
+
+      requestAnimationFrame(loop);
+    }
+
+    // ============================================================================
+    // INITIALIZATION
+    // ============================================================================
+
+    function resize() {
+      state.width = window.innerWidth;
+      state.height = window.innerHeight;
+      state.canvas.width = state.width;
+      state.canvas.height = state.height;
+
+      // Reinitialize current effect
+      if (sceneManager.currentEffect && sceneManager.currentEffect.init) {
+        sceneManager.currentEffect.init();
+      }
+    }
+
+    function start() {
+      state.running = true;
+      state.paused = false;
+      state.lastTime = performance.now();
+
+      audio.init();
+      audio.start();
+
+      sceneManager.init();
+
+      requestAnimationFrame(loop);
+
+      // Hide start button
+      document.getElementById('startBtn').classList.add('hidden');
+    }
+
+    function togglePause() {
+      state.paused = !state.paused;
+    }
+
+    function toggleFullscreen() {
+      if (!document.fullscreenElement) {
+        document.documentElement.requestFullscreen();
+      } else {
+        document.exitFullscreen();
+      }
+    }
+
+    function restart() {
+      state.time = 0;
+      state.currentScene = 0;
+      sceneManager.loadScene(0);
+    }
+
+    // Setup
+    window.addEventListener('load', () => {
+      state.canvas = document.getElementById('canvas');
+      state.ctx = state.canvas.getContext('2d', { alpha: false });
+
+      resize();
+      window.addEventListener('resize', resize);
+
+      // Controls
+      document.getElementById('startBtn').addEventListener('click', start);
+
+      document.addEventListener('keydown', (e) => {
+        if (e.code === 'Space') {
+          e.preventDefault();
+          togglePause();
+        } else if (e.code === 'KeyF') {
+          toggleFullscreen();
+        } else if (e.code === 'KeyR') {
+          restart();
+        }
+      });
+    });
+  </script>
+</body>
+</html>

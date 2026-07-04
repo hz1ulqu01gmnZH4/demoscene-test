@@ -1,0 +1,837 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>FABLE — a single-file HTML demoscene</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; height: 100%; overflow: hidden;
+    background: #000; color: #cfd3ff;
+    font-family: "Courier New", ui-monospace, monospace;
+  }
+  #gl, #ui { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  #ui { pointer-events: none; }
+  #boot {
+    position: fixed; inset: 0; z-index: 10;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    background: radial-gradient(ellipse at 50% 40%, #0b0b2a 0%, #000 70%);
+    cursor: pointer; text-align: center; user-select: none;
+  }
+  #boot h1 {
+    font-size: clamp(2.5rem, 9vw, 6rem); margin: 0; letter-spacing: .35em;
+    color: #fff; text-shadow: 0 0 18px #7a5cff, 0 0 60px #4a2cff;
+    animation: pulse 2.2s ease-in-out infinite;
+  }
+  #boot p { margin: .5em 0; opacity: .85; letter-spacing: .18em; }
+  #boot .hint { margin-top: 2.2em; color: #8ef; animation: blink 1.1s steps(2) infinite; }
+  #boot .keys { font-size: .8em; opacity: .55; }
+  @keyframes pulse { 50% { text-shadow: 0 0 30px #9a7cff, 0 0 90px #6a4cff; } }
+  @keyframes blink { 50% { opacity: .15; } }
+  #err {
+    position: fixed; inset: auto 0 0 0; z-index: 20; display: none;
+    background: #300; color: #f88; padding: 12px 16px;
+    font-size: 12px; white-space: pre-wrap; max-height: 45%; overflow: auto;
+    border-top: 2px solid #f44;
+  }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<canvas id="ui"></canvas>
+
+<div id="boot">
+  <h1>FABLE</h1>
+  <p>A SINGLE-FILE HTML DEMO</p>
+  <p class="keys">WEBGL2 SHADERS &middot; PROCEDURAL WEB AUDIO &middot; BEAT-LOCKED SYNC &middot; ZERO ASSETS</p>
+  <p class="hint">&gt;&gt; CLICK OR TAP TO START &lt;&lt;</p>
+  <p class="keys">[SPACE] pause &nbsp; [M] mute &nbsp; [F] fullscreen &nbsp; [1-6] jump scene</p>
+</div>
+
+<div id="err"></div>
+
+<script>
+'use strict';
+
+/* ============================================================
+   FABLE — a single-file demoscene production
+   6 shader scenes / procedural soundtrack / beat-locked sync
+   ============================================================ */
+
+// ---------- timing constants (everything derives from the music clock) ----------
+const BPM        = 128;
+const SPB        = 60 / BPM;          // seconds per beat
+const STEP       = SPB / 4;           // sixteenth note
+const BAR        = SPB * 4;
+const SCENE_BARS = 8;
+const SCENE_LEN  = BAR * SCENE_BARS;  // 15 s per scene at 128 BPM
+const NUM_SCENES = 6;
+const LOOP_LEN   = SCENE_LEN * NUM_SCENES;
+const STEPS_PER_SCENE = SCENE_BARS * 16;
+
+const SCENE_TITLES = [
+  'INITIATING WARP',
+  'PLASMA DREAMS',
+  'THE INFINITE TUNNEL',
+  'LIQUID METAL',
+  'FRACTAL CATHEDRAL',
+  'GREETINGS & RESPECT',
+];
+
+const SCROLLTEXT =
+  '   *** FABLE PRESENTS: A TRIBUTE TO THE DEMOSCENE ***   ' +
+  'EVERYTHING YOU SEE AND HEAR IS GENERATED IN REAL TIME FROM A SINGLE HTML FILE - ' +
+  'NO ASSETS, NO LIBRARIES, NO NETWORK...   ' +
+  'GREETINGS FLY OUT TO FUTURE CREW - FAIRLIGHT - FARBRAUSCH - CONSPIRACY - ' +
+  'MERCURY - ASD - COCOON - LOGICOMA - AND EVERY CODER WHO EVER RACED THE BEAM...   ' +
+  'MUSIC IS SEQUENCED AT 128 BPM THROUGH THE WEB AUDIO API AND EVERY FLASH IS ' +
+  'LOCKED TO THE KICK DRUM...   KEEP THE SCENE ALIVE ...             ';
+
+// ---------- error handling: fail loudly, never silently ----------
+const errBox = document.getElementById('err');
+function fatal(msg) {
+  errBox.style.display = 'block';
+  errBox.textContent += msg + '\n';
+  throw new Error(msg);
+}
+window.addEventListener('error', e => {
+  errBox.style.display = 'block';
+  errBox.textContent += (e.message || e.error) + '\n';
+});
+window.addEventListener('unhandledrejection', e => {
+  errBox.style.display = 'block';
+  errBox.textContent += 'Unhandled rejection: ' + ((e.reason && e.reason.message) || e.reason) + '\n';
+});
+
+// ---------- fragment shader: all six scenes ----------
+const VERT_SRC = `#version 300 es
+layout(location=0) in vec2 aPos;
+void main() { gl_Position = vec4(aPos, 0.0, 1.0); }
+`;
+
+const FRAG_SRC = `#version 300 es
+precision highp float;
+
+uniform vec2  uRes;
+uniform float uTime;       // global song time
+uniform float uSceneTime;  // time within current scene
+uniform int   uScene;
+uniform float uKick;       // 1.0 on kick drum hit, exponential decay
+uniform float uBeatPhase;  // 0..1 phase within current beat
+uniform float uBass;       // spectrum energy: lows
+uniform float uMid;        //                  mids
+uniform float uHigh;       //                  highs
+uniform float uFade;       // scene crossfade envelope
+
+out vec4 fragColor;
+
+#define PI  3.14159265359
+#define TAU 6.28318530718
+
+mat2 rot(float a) { float c = cos(a), s = sin(a); return mat2(c, -s, s, c); }
+
+float hash21(vec2 p) {
+  p = fract(p * vec2(234.34, 435.345));
+  p += dot(p, p + 34.23);
+  return fract(p.x * p.y);
+}
+
+vec3 neonPal(float t) {
+  return 0.5 + 0.5 * cos(TAU * (t + vec3(0.0, 0.33, 0.67)));
+}
+
+/* ---- scene 0: hyperspace starfield ---- */
+vec3 scnStars(vec2 uv) {
+  float t = uSceneTime;
+  vec3 col = vec3(0.0);
+  float speed = 0.10 + uKick * 0.06;
+  for (float i = 0.0; i < 8.0; i++) {
+    float z = fract(i / 8.0 - t * speed);
+    float scale = mix(16.0, 0.3, z);
+    float layerFade = smoothstep(0.0, 0.35, z) * smoothstep(1.0, 0.8, z);
+    vec2 gv = uv * scale + vec2(i * 7.31, i * 3.17);
+    vec2 id = floor(gv);
+    gv = fract(gv) - 0.5;
+    float n = hash21(id);
+    float mask = step(n, 0.14);
+    vec2 sp = (vec2(n, fract(n * 7.13)) - 0.5) * 0.7;
+    float d = length(gv - sp);
+    float star = smoothstep(0.05, 0.0, d) + 0.002 / (d * d + 0.001);
+    col += mask * layerFade * star * (0.4 + 0.6 * neonPal(n * 5.0 + uTime * 0.05));
+  }
+  // warp-core glow, flashing with the kick
+  col += vec3(0.35, 0.45, 1.0) * (0.05 + uKick * 0.22) / (length(uv) + 0.25);
+  col += vec3(0.1, 0.05, 0.3) * uBass;
+  return col;
+}
+
+/* ---- scene 1: old-school plasma ---- */
+vec3 scnPlasma(vec2 uv) {
+  float t = uSceneTime * 1.15;
+  vec2 p = uv * 3.0;
+  float v = sin(p.x * 1.7 + t);
+  v += sin(0.9 * (p.y + t * 0.8));
+  v += sin(0.7 * (p.x + p.y) + t * 1.3);
+  vec2 c = vec2(sin(t * 0.43), cos(t * 0.36)) * 1.8;
+  v += sin(length(p - c) * 1.6 - t);
+  v *= 0.25;
+  vec3 col = neonPal(v * 0.9 + uTime * 0.03 + uBass * 0.15);
+  // interference rings breathing with the mids
+  col *= 0.72 + 0.28 * sin(v * TAU * 2.0 + t * 2.0 + uMid * 3.0);
+  col *= 1.0 + uKick * 0.35;
+  return col;
+}
+
+/* ---- scene 2: the infinite tunnel ---- */
+vec3 scnTunnel(vec2 uv) {
+  float t = uSceneTime;
+  vec2 off = vec2(sin(t * 0.6), cos(t * 0.47)) * 0.24;
+  vec2 p = uv - off;
+  float r = length(p);
+  float a = atan(p.y, p.x) + sin(t * 0.3) * 1.2;
+  float z = 0.25 / max(r, 1e-4) + t * 2.4 + uKick * 0.35;
+  float ang = a / PI * 4.0;
+  float ch = sin(z * PI) * sin(ang * PI);
+  float m = smoothstep(-0.25, 0.25, ch);
+  vec3 col = neonPal(floor(z) * 0.07 + floor(ang) * 0.045 + uTime * 0.02);
+  col = mix(col * 0.18, col, m);
+  col *= smoothstep(0.0, 0.42, r);            // depth falloff into the void
+  col *= 1.0 + uKick * 0.55;
+  // ring of light racing down the tunnel on the highs
+  col += vec3(0.9, 0.7, 1.0) * uHigh * 0.4 * smoothstep(0.45, 0.0, abs(fract(z * 0.25) - 0.5));
+  return col;
+}
+
+/* ---- scene 3: liquid metal metaballs ---- */
+float smin(float a, float b, float k) {
+  float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
+  return mix(b, a, h) - k * h * (1.0 - h);
+}
+float mapMeta(vec3 p) {
+  float t = uSceneTime;
+  float d = 1e4;
+  for (int i = 0; i < 5; i++) {
+    float fi = float(i) + 1.0;
+    vec3 c = vec3(
+      sin(t * 0.83 + fi * 1.7),
+      sin(t * 0.72 + fi * 3.1),
+      sin(t * 0.95 + fi * 5.2)) * 0.85;
+    float rad = 0.40 + 0.22 * uBass + 0.05 * sin(t * 2.0 + fi);
+    d = smin(d, length(p - c) - rad, 0.5);
+  }
+  return d;
+}
+vec3 nMeta(vec3 p) {
+  vec2 e = vec2(0.002, 0.0);
+  return normalize(vec3(
+    mapMeta(p + e.xyy) - mapMeta(p - e.xyy),
+    mapMeta(p + e.yxy) - mapMeta(p - e.yxy),
+    mapMeta(p + e.yyx) - mapMeta(p - e.yyx)));
+}
+vec3 scnMeta(vec2 uv) {
+  float t = uSceneTime;
+  vec3 ro = vec3(0.0, 0.0, -3.3);
+  vec3 rd = normalize(vec3(uv, 1.45));
+  ro.xz *= rot(t * 0.22); rd.xz *= rot(t * 0.22);
+  vec3 col = vec3(0.015, 0.01, 0.04) + 0.06 * neonPal(uv.y * 0.3 + uTime * 0.02);
+  float dt = 0.0, d = 1e3, glow = 0.0;
+  for (int i = 0; i < 70; i++) {
+    vec3 p = ro + rd * dt;
+    d = mapMeta(p);
+    glow += exp(-d * 7.0) * 0.02;
+    if (d < 0.0015 || dt > 9.0) break;
+    dt += d * 0.9;
+  }
+  if (d < 0.0015) {
+    vec3 p = ro + rd * dt;
+    vec3 n = nMeta(p);
+    vec3 l = normalize(vec3(0.6, 0.8, -0.4));
+    float dif = max(dot(n, l), 0.0);
+    float fre = pow(1.0 - max(dot(n, -rd), 0.0), 3.0);
+    vec3 base = neonPal(p.y * 0.15 + uTime * 0.03 + 0.5);
+    col = base * (0.12 + 0.8 * dif);
+    col += fre * vec3(0.85, 0.9, 1.0) * (0.55 + uKick * 0.6);
+    col += neonPal(uTime * 0.05) * pow(max(dot(reflect(-l, n), -rd), 0.0), 24.0);
+  }
+  col += neonPal(uTime * 0.04 + 0.2) * glow * (0.5 + uKick * 0.8);
+  return col;
+}
+
+/* ---- scene 4: fractal cathedral (menger sponge) ---- */
+float sdBox(vec3 p, vec3 b) {
+  vec3 q = abs(p) - b;
+  return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0);
+}
+float mapMenger(vec3 p) {
+  p.xy *= rot(uSceneTime * 0.18);
+  p.yz *= rot(uSceneTime * 0.13);
+  float d = sdBox(p, vec3(1.0));
+  float s = 1.0;
+  for (int m = 0; m < 4; m++) {
+    vec3 a = mod(p * s, 2.0) - 1.0;
+    s *= 3.0;
+    vec3 r = abs(1.0 - 3.0 * abs(a));
+    float da = max(r.x, r.y);
+    float db = max(r.y, r.z);
+    float dc = max(r.z, r.x);
+    float c = (min(da, min(db, dc)) - 1.0) / s;
+    d = max(d, c);
+  }
+  return d;
+}
+vec3 scnMenger(vec2 uv) {
+  float t = uSceneTime;
+  // camera breathes with the song and lunges on the kick
+  vec3 ro = vec3(0.0, 0.0, -(2.7 + 0.35 * sin(t * 0.25) - uKick * 0.18));
+  vec3 rd = normalize(vec3(uv, 1.5));
+  float dt = 0.0, d = 1e3;
+  int steps = 0;
+  for (int i = 0; i < 96; i++) {
+    steps = i;
+    vec3 p = ro + rd * dt;
+    d = mapMenger(p);
+    if (d < 0.0012 || dt > 8.0) break;
+    dt += d;
+  }
+  vec3 col = vec3(0.01, 0.005, 0.03);
+  float edge = float(steps) / 96.0;
+  if (d < 0.0012) {
+    vec3 p = ro + rd * dt;
+    vec2 e = vec2(0.0015, 0.0);
+    vec3 n = normalize(vec3(
+      mapMenger(p + e.xyy) - mapMenger(p - e.xyy),
+      mapMenger(p + e.yxy) - mapMenger(p - e.yxy),
+      mapMenger(p + e.yyx) - mapMenger(p - e.yyx)));
+    vec3 l = normalize(vec3(0.5, 0.9, -0.6));
+    float dif = max(dot(n, l), 0.0);
+    float ao = 1.0 - edge * 0.9;
+    vec3 base = neonPal(length(p) * 0.25 + uTime * 0.02);
+    col = base * (0.2 + 0.8 * dif) * ao;
+  }
+  // step-count halo makes the lattice edges crackle with the hats
+  col += neonPal(uTime * 0.03 + 0.5) * pow(edge, 2.5) * (0.5 + uHigh * 1.2 + uKick * 0.4);
+  return col;
+}
+
+/* ---- scene 5: greetings — copper bars, checker floor, boing ball ---- */
+vec3 scnRetro(vec2 uv) {
+  float t = uSceneTime;
+  vec3 col = vec3(0.008, 0.0, 0.028);
+
+  // copper bars
+  for (int i = 0; i < 8; i++) {
+    float fi = float(i);
+    float y = sin(t * 1.35 + fi * 0.55) * 0.5 + 0.28;
+    float d = abs(uv.y - y);
+    float body = smoothstep(0.085, 0.0, d);
+    float shine = smoothstep(0.085, 0.015, d);
+    vec3 bar = neonPal(fi * 0.125 + t * 0.04) * (0.3 + 0.7 * shine) * (1.0 + uKick * 0.3);
+    col = mix(col, bar, body);
+  }
+
+  // perspective checker floor
+  float horizon = -0.12;
+  if (uv.y < horizon) {
+    float py = horizon - uv.y;
+    float z = 0.32 / py;
+    float x = uv.x * z;
+    float ch = mod(floor(z * 2.0 + t * 3.4) + floor(x * 2.0), 2.0);
+    vec3 f = mix(vec3(0.05, 0.0, 0.12), neonPal(0.7 + uTime * 0.01), ch * 0.4 + 0.12);
+    f *= exp(-z * 0.28);            // fog toward the horizon
+    f *= 1.0 + uKick * 0.5;
+    col = f;
+  }
+
+  // boing ball, bouncing exactly on the beat
+  float bounce = abs(sin(uBeatPhase * PI));
+  vec2 bp = vec2(sin(t * 0.85) * 0.55, horizon + 0.16 + bounce * 0.28);
+  float br = 0.16 + uBass * 0.02;
+
+  // drop shadow
+  vec2 sh = uv - vec2(bp.x, horizon + 0.02);
+  sh.y *= 3.5;
+  col *= 1.0 - 0.55 * smoothstep(br * 1.4, 0.0, length(sh)) * (1.0 - bounce * 0.6);
+
+  float bd = length(uv - bp);
+  if (bd < br) {
+    vec2 q = (uv - bp) / br;
+    vec3 n = vec3(q, sqrt(max(1.0 - dot(q, q), 0.0)));
+    // spin the checkers
+    float lon = atan(n.x, n.z) + t * 2.2;
+    float lat = acos(clamp(n.y, -1.0, 1.0));
+    float chb = mod(floor(lon / PI * 4.0) + floor(lat / PI * 4.0), 2.0);
+    vec3 ballCol = mix(vec3(0.95), vec3(0.95, 0.15, 0.15), chb);
+    float dif = max(dot(n, normalize(vec3(0.4, 0.7, 0.6))), 0.0);
+    col = ballCol * (0.25 + 0.75 * dif) * (1.0 + uKick * 0.25);
+  }
+  return col;
+}
+
+void main() {
+  vec2 uv = (gl_FragCoord.xy - 0.5 * uRes) / uRes.y;
+  vec3 col;
+  if      (uScene == 0) col = scnStars(uv);
+  else if (uScene == 1) col = scnPlasma(uv);
+  else if (uScene == 2) col = scnTunnel(uv);
+  else if (uScene == 3) col = scnMeta(uv);
+  else if (uScene == 4) col = scnMenger(uv);
+  else                  col = scnRetro(uv);
+
+  col *= 1.0 - 0.45 * dot(uv, uv);                 // vignette
+  col *= 0.94 + 0.06 * sin(gl_FragCoord.y * PI);   // scanlines
+  col *= uFade;                                    // scene crossfade
+  col = pow(max(col, 0.0), vec3(0.85));            // lift
+  fragColor = vec4(col, 1.0);
+}
+`;
+
+// ---------- WebGL setup ----------
+const glCanvas = document.getElementById('gl');
+const uiCanvas = document.getElementById('ui');
+const ui = uiCanvas.getContext('2d');
+if (!ui) fatal('2D canvas context is not available. This demo requires it for the overlay.');
+let gl, uniforms = {};
+
+function compileShader(type, src) {
+  const sh = gl.createShader(type);
+  gl.shaderSource(sh, src);
+  gl.compileShader(sh);
+  if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+    fatal('Shader compile error:\n' + gl.getShaderInfoLog(sh));
+  }
+  return sh;
+}
+
+function initGL() {
+  gl = glCanvas.getContext('webgl2', { antialias: false, alpha: false });
+  if (!gl) fatal('WebGL2 is not available in this browser. This demo requires WebGL2.');
+
+  const prog = gl.createProgram();
+  gl.attachShader(prog, compileShader(gl.VERTEX_SHADER, VERT_SRC));
+  gl.attachShader(prog, compileShader(gl.FRAGMENT_SHADER, FRAG_SRC));
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+    fatal('Program link error:\n' + gl.getProgramInfoLog(prog));
+  }
+  gl.useProgram(prog);
+
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+  for (const name of ['uRes', 'uTime', 'uSceneTime', 'uScene', 'uKick',
+                      'uBeatPhase', 'uBass', 'uMid', 'uHigh', 'uFade']) {
+    uniforms[name] = gl.getUniformLocation(prog, name);
+    if (uniforms[name] === null) fatal('Uniform not found (typo or optimized out): ' + name);
+  }
+}
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+  glCanvas.width  = Math.floor(innerWidth * dpr);
+  glCanvas.height = Math.floor(innerHeight * dpr);
+  uiCanvas.width  = Math.floor(innerWidth * dpr);
+  uiCanvas.height = Math.floor(innerHeight * dpr);
+  if (gl) gl.viewport(0, 0, glCanvas.width, glCanvas.height);
+}
+window.addEventListener('resize', resize);
+
+// ---------- audio engine: fully procedural soundtrack ----------
+let actx, master, muteGain, analyser, delaySend;
+let noiseBuf;
+let songStart = 0;
+let totalStep = 0;
+let nextNoteTime = 0;
+let kickTimes = [];       // scheduled kick times, drives uKick precisely
+let muted = false;
+let freqData;
+
+const m2f = m => 440 * Math.pow(2, (m - 69) / 12);
+
+// Am / F / C / G — one chord per two bars
+const PROG = [
+  { root: 45, tones: [0, 3, 7, 12] },   // A minor
+  { root: 41, tones: [0, 4, 7, 12] },   // F major
+  { root: 48, tones: [0, 4, 7, 12] },   // C major
+  { root: 43, tones: [0, 4, 7, 12] },   // G major
+];
+
+// semitone offset from chord root per sixteenth, null = rest
+const BASS_PAT = [0, null, 12, null, 0, null, 0, 12, null, null, 0, null, 0, null, 7, 12];
+
+// which instruments play in each scene (arrangement builds up, then strips down)
+const ARRANGE = [
+  { kick: 1, bass: 1, hat: 0, snare: 0, arp: 0, pad: 1, hat16: 0 },
+  { kick: 1, bass: 1, hat: 1, snare: 0, arp: 0, pad: 1, hat16: 0 },
+  { kick: 1, bass: 1, hat: 1, snare: 1, arp: 1, pad: 0, hat16: 0 },
+  { kick: 1, bass: 1, hat: 1, snare: 1, arp: 1, pad: 1, hat16: 1 },
+  { kick: 1, bass: 1, hat: 1, snare: 1, arp: 1, pad: 1, hat16: 1 },
+  { kick: 1, bass: 1, hat: 1, snare: 1, arp: 1, pad: 1, hat16: 0 },
+];
+
+function initAudio() {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) fatal('Web Audio API is not available in this browser. This demo requires it.');
+  actx = new AC();
+
+  master = actx.createGain();
+  master.gain.value = 0.8;
+
+  const comp = actx.createDynamicsCompressor();
+  comp.threshold.value = -14;
+  comp.ratio.value = 4;
+
+  analyser = actx.createAnalyser();
+  analyser.fftSize = 1024;
+  analyser.smoothingTimeConstant = 0.72;
+  freqData = new Uint8Array(analyser.frequencyBinCount);
+
+  muteGain = actx.createGain();
+
+  // analyser sits BEFORE the mute gain so visuals stay synced while muted
+  master.connect(comp);
+  comp.connect(analyser);
+  analyser.connect(muteGain);
+  muteGain.connect(actx.destination);
+
+  // shared feedback delay for the arp (dotted-eighth echo)
+  delaySend = actx.createGain();
+  delaySend.gain.value = 0.35;
+  const delay = actx.createDelay(1.0);
+  delay.delayTime.value = STEP * 3;
+  const fb = actx.createGain();
+  fb.gain.value = 0.38;
+  const delayFilter = actx.createBiquadFilter();
+  delayFilter.type = 'lowpass';
+  delayFilter.frequency.value = 3200;
+  delaySend.connect(delay);
+  delay.connect(delayFilter);
+  delayFilter.connect(fb);
+  fb.connect(delay);
+  delayFilter.connect(master);
+
+  // one second of white noise, reused by hats and snares
+  noiseBuf = actx.createBuffer(1, actx.sampleRate, actx.sampleRate);
+  const data = noiseBuf.getChannelData(0);
+  for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+}
+
+function envGain(t, peak, attack, decay) {
+  const g = actx.createGain();
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.linearRampToValueAtTime(peak, t + attack);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + attack + decay);
+  return g;
+}
+
+function playKick(t) {
+  const o = actx.createOscillator();
+  o.type = 'sine';
+  o.frequency.setValueAtTime(155, t);
+  o.frequency.exponentialRampToValueAtTime(42, t + 0.14);
+  const g = envGain(t, 0.95, 0.002, 0.32);
+  o.connect(g); g.connect(master);
+  o.start(t); o.stop(t + 0.4);
+}
+
+function playNoise(t, peak, decay, filterType, freq, q) {
+  const src = actx.createBufferSource();
+  src.buffer = noiseBuf;
+  const f = actx.createBiquadFilter();
+  f.type = filterType;
+  f.frequency.value = freq;
+  f.Q.value = q;
+  const g = envGain(t, peak, 0.001, decay);
+  src.connect(f); f.connect(g); g.connect(master);
+  src.start(t, Math.random()); src.stop(t + decay + 0.05);
+}
+
+function playHat(t, accent)  { playNoise(t, accent ? 0.22 : 0.11, accent ? 0.09 : 0.045, 'highpass', 7500, 1); }
+function playSnare(t) {
+  playNoise(t, 0.35, 0.16, 'bandpass', 1900, 0.8);
+  const o = actx.createOscillator();
+  o.type = 'triangle';
+  o.frequency.setValueAtTime(210, t);
+  o.frequency.exponentialRampToValueAtTime(140, t + 0.08);
+  const g = envGain(t, 0.25, 0.001, 0.09);
+  o.connect(g); g.connect(master);
+  o.start(t); o.stop(t + 0.15);
+}
+
+function playBass(t, midi) {
+  const o = actx.createOscillator();
+  o.type = 'sawtooth';
+  o.frequency.value = m2f(midi);
+  const f = actx.createBiquadFilter();
+  f.type = 'lowpass';
+  f.frequency.setValueAtTime(900, t);
+  f.frequency.exponentialRampToValueAtTime(220, t + STEP * 0.9);
+  f.Q.value = 6;
+  const g = envGain(t, 0.34, 0.004, STEP * 0.95);
+  o.connect(f); f.connect(g); g.connect(master);
+  o.start(t); o.stop(t + STEP * 1.2);
+}
+
+function playArp(t, midi) {
+  const o = actx.createOscillator();
+  o.type = 'square';
+  o.frequency.value = m2f(midi);
+  const f = actx.createBiquadFilter();
+  f.type = 'lowpass';
+  f.frequency.value = 2600;
+  const g = envGain(t, 0.085, 0.003, STEP * 0.8);
+  o.connect(f); f.connect(g);
+  g.connect(master);
+  g.connect(delaySend);
+  o.start(t); o.stop(t + STEP * 1.1);
+}
+
+function playPad(t, rootMidi, tones) {
+  for (const tone of tones) {
+    for (const det of [-6, 6]) {
+      const o = actx.createOscillator();
+      o.type = 'sawtooth';
+      o.frequency.value = m2f(rootMidi + tone + 12);
+      o.detune.value = det;
+      const f = actx.createBiquadFilter();
+      f.type = 'lowpass';
+      f.frequency.value = 1100;
+      const g = actx.createGain();
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.linearRampToValueAtTime(0.028, t + 0.6);
+      g.gain.setValueAtTime(0.028, t + BAR * 2 - 1.0);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + BAR * 2);
+      o.connect(f); f.connect(g); g.connect(master);
+      o.start(t); o.stop(t + BAR * 2 + 0.1);
+    }
+  }
+}
+
+function scheduleStep(step, t) {
+  const loopStep = step % (STEPS_PER_SCENE * NUM_SCENES);
+  const scene = Math.floor(loopStep / STEPS_PER_SCENE);
+  const s = loopStep % 16;                        // position within the bar
+  const bar = Math.floor(loopStep / 16);
+  const chord = PROG[Math.floor(bar / 2) % PROG.length];
+  const arr = ARRANGE[scene];
+
+  if (arr.kick && s % 4 === 0) {
+    playKick(t);
+    kickTimes.push(t);
+  }
+  if (arr.snare && (s === 4 || s === 12)) playSnare(t);
+  if (arr.hat16) playHat(t, s % 4 === 2);
+  else if (arr.hat && s % 4 === 2) playHat(t, true);
+
+  if (arr.bass) {
+    const off = BASS_PAT[s];
+    if (off !== null) playBass(t, chord.root + off);
+  }
+  if (arr.arp) {
+    const tone = chord.tones[s % chord.tones.length];
+    const oct = (s % 8 >= 4) ? 24 : 12;
+    playArp(t, chord.root + tone + oct);
+  }
+  if (arr.pad && s === 0 && bar % 2 === 0) playPad(t, chord.root, chord.tones);
+}
+
+const LOOKAHEAD = 0.12;   // seconds scheduled ahead
+function schedulerTick() {
+  while (nextNoteTime < actx.currentTime + LOOKAHEAD) {
+    scheduleStep(totalStep, nextNoteTime);
+    totalStep++;
+    nextNoteTime += STEP;
+  }
+  // keep the kick list short
+  while (kickTimes.length > 8 && kickTimes[1] <= actx.currentTime) kickTimes.shift();
+}
+
+// ---------- spectrum analysis for continuous reactivity ----------
+function band(lo, hi) {
+  let sum = 0;
+  for (let i = lo; i < hi; i++) sum += freqData[i];
+  return sum / ((hi - lo) * 255);
+}
+
+// ---------- main loop ----------
+let running = false;
+let paused = false;
+let frames = 0, fps = 0, fpsClock = 0;
+
+function currentKickEnv(now) {
+  let last = -1;
+  for (let i = kickTimes.length - 1; i >= 0; i--) {
+    if (kickTimes[i] <= now) { last = kickTimes[i]; break; }
+  }
+  if (last < 0) return 0;
+  return Math.exp(-7.0 * (now - last));
+}
+
+function render(ts) {
+  if (!running) return;
+  requestAnimationFrame(render);
+
+  // fps
+  frames++;
+  if (ts - fpsClock > 500) {
+    fps = Math.round(frames * 1000 / (ts - fpsClock));
+    frames = 0; fpsClock = ts;
+  }
+
+  const now = actx.currentTime;
+  const tSong = ((now - songStart) % LOOP_LEN + LOOP_LEN) % LOOP_LEN;
+  const scene = Math.min(Math.floor(tSong / SCENE_LEN), NUM_SCENES - 1);
+  const tScene = tSong - scene * SCENE_LEN;
+  const fade = Math.min(1, tScene / 0.8, (SCENE_LEN - tScene) / 0.8);
+  const beatPhase = (tSong % SPB) / SPB;
+
+  analyser.getByteFrequencyData(freqData);
+  const bass = band(1, 9);
+  const mid  = band(9, 64);
+  const high = band(64, 256);
+  const kick = currentKickEnv(now);
+
+  gl.uniform2f(uniforms.uRes, glCanvas.width, glCanvas.height);
+  gl.uniform1f(uniforms.uTime, tSong);
+  gl.uniform1f(uniforms.uSceneTime, tScene);
+  gl.uniform1i(uniforms.uScene, scene);
+  gl.uniform1f(uniforms.uKick, kick);
+  gl.uniform1f(uniforms.uBeatPhase, beatPhase);
+  gl.uniform1f(uniforms.uBass, bass);
+  gl.uniform1f(uniforms.uMid, mid);
+  gl.uniform1f(uniforms.uHigh, high);
+  gl.uniform1f(uniforms.uFade, fade);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  drawOverlay(tSong, tScene, scene, kick, bass);
+}
+
+// ---------- 2D overlay: scroller, titles, HUD ----------
+function drawOverlay(tSong, tScene, scene, kick, bass) {
+  const w = uiCanvas.width, h = uiCanvas.height;
+  const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+  ui.clearRect(0, 0, w, h);
+
+  // --- sine scroller ---
+  const fontPx = Math.max(18, Math.floor(h * 0.045));
+  ui.font = `bold ${fontPx}px "Courier New", monospace`;
+  ui.textBaseline = 'middle';
+  const charW = ui.measureText('M').width * 1.05;
+  const speed = w * 0.16;
+  const totalW = SCROLLTEXT.length * charW;
+  const baseX = w - ((tSong * speed) % (totalW + w));
+  const baseY = h * 0.9;
+  for (let i = 0; i < SCROLLTEXT.length; i++) {
+    const x = baseX + i * charW;
+    if (x < -charW || x > w) continue;
+    const phase = x * 0.012 / dpr + tSong * 2.4;
+    const y = baseY + Math.sin(phase) * h * 0.032 * (1 + kick * 0.7);
+    const hue = (i * 6 + tSong * 50) % 360;
+    ui.fillStyle = `hsl(${hue} 100% ${62 + kick * 20}%)`;
+    ui.shadowColor = `hsl(${hue} 100% 50%)`;
+    ui.shadowBlur = 12 * dpr;
+    ui.fillText(SCROLLTEXT[i], x, y);
+  }
+  ui.shadowBlur = 0;
+
+  // --- scene title card ---
+  if (tScene < 4.5) {
+    const a = Math.min(1, tScene / 0.6, (4.5 - tScene) / 0.9);
+    const titlePx = Math.floor(h * 0.062);
+    ui.font = `bold ${titlePx}px "Courier New", monospace`;
+    ui.textAlign = 'center';
+    ui.globalAlpha = a;
+    const title = SCENE_TITLES[scene];
+    const ty = h * 0.18;
+    ui.fillStyle = '#fff';
+    ui.shadowColor = `hsl(${(scene * 60 + 240) % 360} 100% 60%)`;
+    ui.shadowBlur = 24 * dpr;
+    ui.fillText(title, w / 2, ty);
+    ui.font = `${Math.floor(titlePx * 0.38)}px "Courier New", monospace`;
+    ui.fillStyle = '#9fb0ff';
+    ui.shadowBlur = 0;
+    ui.fillText(`— part ${scene + 1} of ${NUM_SCENES} —`, w / 2, ty + titlePx * 0.95);
+    ui.globalAlpha = 1;
+    ui.textAlign = 'left';
+  }
+
+  // --- HUD ---
+  const hudPx = Math.max(11, Math.floor(h * 0.017));
+  ui.font = `${hudPx}px "Courier New", monospace`;
+  ui.fillStyle = 'rgba(180,190,255,0.75)';
+  const mm = t => `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+  ui.fillText(`FPS ${fps}  |  ${mm(tSong)} / ${mm(LOOP_LEN)}  |  ${BPM} BPM${muted ? '  |  MUTED' : ''}${paused ? '  |  PAUSED' : ''}`, 12 * dpr, 16 * dpr);
+  ui.textAlign = 'right';
+  ui.fillText('SPACE pause · M mute · F fullscreen · 1-6 scenes', w - 12 * dpr, 16 * dpr);
+  ui.textAlign = 'left';
+
+  // --- loop progress bar, beat-flashing ---
+  ui.fillStyle = `rgba(255,255,255,${0.12 + kick * 0.3})`;
+  ui.fillRect(0, h - 3 * dpr, w * (tSong / LOOP_LEN), 3 * dpr);
+  // scene boundary ticks
+  for (let i = 1; i < NUM_SCENES; i++) {
+    ui.fillStyle = 'rgba(255,255,255,0.25)';
+    ui.fillRect(w * i / NUM_SCENES, h - 6 * dpr, 1, 6 * dpr);
+  }
+}
+
+// ---------- controls ----------
+function jumpToScene(idx) {
+  // relock both the audio scheduler and visual clock to the scene boundary
+  const now = actx.currentTime + 0.05;
+  songStart = now - idx * SCENE_LEN;
+  totalStep = idx * STEPS_PER_SCENE;
+  nextNoteTime = now;
+  kickTimes.length = 0;
+}
+
+function togglePause() {
+  const op = paused ? actx.resume() : actx.suspend();
+  op.then(() => { paused = !paused; })
+    .catch(e => fatal('AudioContext state change failed: ' + e));
+}
+
+function toggleMute() {
+  muted = !muted;
+  muteGain.gain.setTargetAtTime(muted ? 0 : 1, actx.currentTime, 0.02);
+}
+
+window.addEventListener('keydown', e => {
+  if (!running) return;
+  if (e.code === 'Space') { e.preventDefault(); togglePause(); }
+  else if (e.key === 'm' || e.key === 'M') toggleMute();
+  else if (e.key === 'f' || e.key === 'F') {
+    const op = document.fullscreenElement
+      ? document.exitFullscreen()
+      : document.documentElement.requestFullscreen();
+    op.catch(err => fatal('Fullscreen toggle failed: ' + err));
+  }
+  else if (e.key >= '1' && e.key <= String(NUM_SCENES)) {
+    jumpToScene(parseInt(e.key, 10) - 1);
+  }
+});
+
+// ---------- boot ----------
+document.getElementById('boot').addEventListener('click', function start() {
+  if (running) return;
+  running = true;
+  this.style.display = 'none';
+
+  resize();
+  initGL();
+  initAudio();
+
+  // the demo clock IS the audio clock — sample-accurate sync by construction
+  actx.resume().then(() => {
+    songStart = actx.currentTime + 0.1;
+    nextNoteTime = songStart;
+    totalStep = 0;
+    setInterval(schedulerTick, 25);
+    requestAnimationFrame(render);
+  }).catch(e => fatal('AudioContext resume failed at startup: ' + e));
+});
+</script>
+</body>
+</html>
