@@ -428,15 +428,36 @@ function initGL() {
   }
 }
 
+// Adaptive resolution: the shader canvas drops its internal resolution when
+// the frame rate tanks (e.g. software WebGL rasterizers) and creeps back up
+// when there is headroom. The current scale is shown in the HUD.
+let renderScale = 1.0;
+const MIN_SCALE = 0.2;
+
 function resize() {
   const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
-  glCanvas.width  = Math.floor(innerWidth * dpr);
-  glCanvas.height = Math.floor(innerHeight * dpr);
-  uiCanvas.width  = Math.floor(innerWidth * dpr);
-  uiCanvas.height = Math.floor(innerHeight * dpr);
+  glCanvas.width  = Math.max(1, Math.floor(innerWidth  * dpr * renderScale));
+  glCanvas.height = Math.max(1, Math.floor(innerHeight * dpr * renderScale));
+  // overlay is text/lines only — 1x resolution is plenty and much cheaper
+  uiCanvas.width  = Math.floor(innerWidth);
+  uiCanvas.height = Math.floor(innerHeight);
   if (gl) gl.viewport(0, 0, glCanvas.width, glCanvas.height);
 }
 window.addEventListener('resize', resize);
+
+function adaptResolution() {
+  if (paused) return;
+  if (fps < 30 && renderScale > MIN_SCALE) {
+    // aggressive drop when severely below target
+    const f = fps < 10 ? 0.5 : 0.7;
+    renderScale = Math.max(MIN_SCALE, renderScale * f);
+    resize();
+  } else if (fps > 58 && renderScale < 1.0) {
+    // slow creep back up to avoid oscillation
+    renderScale = Math.min(1.0, renderScale * 1.12);
+    resize();
+  }
+}
 
 // ---------- audio engine: fully procedural soundtrack ----------
 let actx, master, muteGain, analyser, delaySend;
@@ -673,11 +694,12 @@ function render(ts) {
   if (!running) return;
   requestAnimationFrame(render);
 
-  // fps
+  // fps + adaptive resolution (re-evaluated once per measurement window)
   frames++;
   if (ts - fpsClock > 500) {
     fps = Math.round(frames * 1000 / (ts - fpsClock));
     frames = 0; fpsClock = ts;
+    adaptResolution();
   }
 
   const now = actx.currentTime;
@@ -711,10 +733,12 @@ function render(ts) {
 // ---------- 2D overlay: scroller, titles, HUD ----------
 function drawOverlay(tSong, tScene, scene, kick, bass) {
   const w = uiCanvas.width, h = uiCanvas.height;
-  const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
   ui.clearRect(0, 0, w, h);
 
   // --- sine scroller ---
+  // NOTE: no shadowBlur here — canvas shadows cost a blur pass PER draw call,
+  // and ~40 glyphs every frame is enough to floor the frame rate on many
+  // systems. The glow is faked with one cheap underdraw pass instead.
   const fontPx = Math.max(18, Math.floor(h * 0.045));
   ui.font = `bold ${fontPx}px "Courier New", monospace`;
   ui.textBaseline = 'middle';
@@ -726,15 +750,16 @@ function drawOverlay(tSong, tScene, scene, kick, bass) {
   for (let i = 0; i < SCROLLTEXT.length; i++) {
     const x = baseX + i * charW;
     if (x < -charW || x > w) continue;
-    const phase = x * 0.012 / dpr + tSong * 2.4;
+    const phase = x * 0.012 + tSong * 2.4;
     const y = baseY + Math.sin(phase) * h * 0.032 * (1 + kick * 0.7);
     const hue = (i * 6 + tSong * 50) % 360;
+    // fake glow: one enlarged translucent underdraw, then the crisp glyph
+    ui.fillStyle = `hsl(${hue} 100% 50% / 0.35)`;
+    ui.fillText(SCROLLTEXT[i], x - 1, y + 1);
+    ui.fillText(SCROLLTEXT[i], x + 1, y - 1);
     ui.fillStyle = `hsl(${hue} 100% ${62 + kick * 20}%)`;
-    ui.shadowColor = `hsl(${hue} 100% 50%)`;
-    ui.shadowBlur = 12 * dpr;
     ui.fillText(SCROLLTEXT[i], x, y);
   }
-  ui.shadowBlur = 0;
 
   // --- scene title card ---
   if (tScene < 4.5) {
@@ -746,8 +771,9 @@ function drawOverlay(tSong, tScene, scene, kick, bass) {
     const title = SCENE_TITLES[scene];
     const ty = h * 0.18;
     ui.fillStyle = '#fff';
+    // one shadowed draw per frame (not per glyph) is affordable
     ui.shadowColor = `hsl(${(scene * 60 + 240) % 360} 100% 60%)`;
-    ui.shadowBlur = 24 * dpr;
+    ui.shadowBlur = 24;
     ui.fillText(title, w / 2, ty);
     ui.font = `${Math.floor(titlePx * 0.38)}px "Courier New", monospace`;
     ui.fillStyle = '#9fb0ff';
@@ -762,18 +788,19 @@ function drawOverlay(tSong, tScene, scene, kick, bass) {
   ui.font = `${hudPx}px "Courier New", monospace`;
   ui.fillStyle = 'rgba(180,190,255,0.75)';
   const mm = t => `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
-  ui.fillText(`FPS ${fps}  |  ${mm(tSong)} / ${mm(LOOP_LEN)}  |  ${BPM} BPM${muted ? '  |  MUTED' : ''}${paused ? '  |  PAUSED' : ''}`, 12 * dpr, 16 * dpr);
+  const resPct = Math.round(renderScale * 100);
+  ui.fillText(`FPS ${fps}  |  RES ${resPct}%  |  ${mm(tSong)} / ${mm(LOOP_LEN)}  |  ${BPM} BPM${muted ? '  |  MUTED' : ''}${paused ? '  |  PAUSED' : ''}`, 12, 16);
   ui.textAlign = 'right';
-  ui.fillText('SPACE pause · M mute · F fullscreen · 1-6 scenes', w - 12 * dpr, 16 * dpr);
+  ui.fillText('SPACE pause · M mute · F fullscreen · 1-6 scenes', w - 12, 16);
   ui.textAlign = 'left';
 
   // --- loop progress bar, beat-flashing ---
   ui.fillStyle = `rgba(255,255,255,${0.12 + kick * 0.3})`;
-  ui.fillRect(0, h - 3 * dpr, w * (tSong / LOOP_LEN), 3 * dpr);
+  ui.fillRect(0, h - 3, w * (tSong / LOOP_LEN), 3);
   // scene boundary ticks
   for (let i = 1; i < NUM_SCENES; i++) {
     ui.fillStyle = 'rgba(255,255,255,0.25)';
-    ui.fillRect(w * i / NUM_SCENES, h - 6 * dpr, 1, 6 * dpr);
+    ui.fillRect(w * i / NUM_SCENES, h - 6, 1, 6);
   }
 }
 
