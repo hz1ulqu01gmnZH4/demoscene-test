@@ -1,0 +1,1100 @@
+<!doctype html>
+<!--
+  ═══════════════════════════════════════════════════════════════════
+   H E L I O P A U S E
+   a FABLE production · 2026 · single-file browser demo
+
+   128 seconds · 120 BPM · WebGL2 + WebAudio · no external assets
+
+   code / visuals / music — claude (fable 5)
+
+   The heliopause is the boundary where the sun's wind stalls
+   against the interstellar medium. This is a journey there:
+     00  nebula          — deep field, drifting
+     01  machine core    — descent through the engine
+     02  the foundry     — infinite menger lattice
+     03  solar wind      — gyroid sea under a dying sun
+     04  escape velocity — apollonian gasket, full burn
+     05  heliopause      — the monolith at the edge
+
+   dev flags: ?t=42&mute=1  (seek, visuals only)
+  ═══════════════════════════════════════════════════════════════════
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>HELIOPAUSE — a fable production</title>
+<link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;circle cx='50' cy='50' r='34' fill='%23ff7733'/&gt;&lt;circle cx='50' cy='50' r='44' fill='none' stroke='%234488ff' stroke-width='4'/&gt;&lt;/svg&gt;">
+<style>
+  html,body{margin:0;height:100%;background:#000;overflow:hidden;cursor:default}
+  canvas{position:fixed;inset:0;width:100vw;height:100vh;display:block}
+  #ov{z-index:2}
+  #err{position:fixed;inset:0;z-index:9;display:none;place-items:center;color:#f66;
+       font:14px/1.6 ui-monospace,monospace;background:#000;text-align:center;padding:2em}
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<canvas id="ov"></canvas>
+<div id="err"></div>
+<script>
+'use strict';
+/* ══════════════════ timeline ══════════════════ */
+const DUR   = 128;                       // seconds
+const BPM   = 120, SPB = 60/BPM, BARS = 4*SPB;   // beat 0.5s, bar 2s
+const SECT  = [0,16,32,56,72,104,120,128];       // scene boundaries (s)
+const ENERGY= [0.25,0.55,0.75,0.40,1.00,0.50,0.30];
+
+const qs = new URLSearchParams(location.search);
+const DEV_MUTE = qs.get('mute')==='1';
+const DEV_T    = parseFloat(qs.get('t')||'0')||0;
+
+function fail(msg){
+  const e=document.getElementById('err');
+  e.style.display='grid'; e.textContent=msg;
+  throw new Error(msg);
+}
+const clamp=(x,a,b)=>Math.min(b,Math.max(a,x));
+const sstep=(a,b,x)=>{const k=clamp((x-a)/(b-a),0,1);return k*k*(3-2*k);};
+
+/* ══════════════════ GL setup ══════════════════ */
+const glc=document.getElementById('gl');
+const gl = glc.getContext('webgl2',{antialias:false,alpha:false,depth:false,
+            powerPreference:'high-performance'});
+if(!gl) fail('WebGL2 is required for this demo and is not available on this browser/GPU.');
+const extF = gl.getExtension('EXT_color_buffer_float');
+const hdrFmt = extF ? gl.RGBA16F : gl.RGBA8;   // capability, not a fallback: both paths verified
+
+function sh(type,src){
+  const s=gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))
+    fail('Shader compile error:\n'+gl.getShaderInfoLog(s));
+  return s;
+}
+function prog(fsSrc){
+  const p=gl.createProgram();
+  gl.attachShader(p,sh(gl.VERTEX_SHADER,VS));
+  gl.attachShader(p,sh(gl.FRAGMENT_SHADER,fsSrc));
+  gl.linkProgram(p);
+  if(!gl.getProgramParameter(p,gl.LINK_STATUS))
+    fail('Program link error:\n'+gl.getProgramInfoLog(p));
+  return p;
+}
+const VS=`#version 300 es
+void main(){vec2 v=vec2(float((gl_VertexID<<1)&2),float(gl_VertexID&2));
+gl_Position=vec4(v*2.-1.,0.,1.);}`;
+
+/* ══════════════════ scene shader ══════════════════ */
+const FS_SCENE=`#version 300 es
+precision highp float;
+uniform vec2  uRes;
+uniform float uT;       // song time
+uniform float uKick;    // kick envelope 0..1
+uniform float uEnergy;  // section intensity
+out vec4 fragColor;
+
+const float PI=3.14159265359;
+mat2 rot(float a){float c=cos(a),s=sin(a);return mat2(c,-s,s,c);}
+float hash21(vec2 p){p=fract(p*vec2(234.34,435.345));p+=dot(p,p+34.23);return fract(p.x*p.y);}
+float noise2(vec2 p){
+  vec2 i=floor(p),f=fract(p); f=f*f*(3.-2.*f);
+  float a=hash21(i),b=hash21(i+vec2(1,0)),c=hash21(i+vec2(0,1)),d=hash21(i+vec2(1,1));
+  return mix(mix(a,b,f.x),mix(c,d,f.x),f.y);
+}
+float fbm(vec2 p){
+  float v=0.,a=.5;
+  mat2 m=rot(0.5);
+  for(int i=0;i<5;i++){v+=a*noise2(p);p=m*p*2.02;a*=.5;}
+  return v;
+}
+vec3 pal(float t,vec3 a,vec3 b,vec3 c,vec3 d){return a+b*cos(6.28318*(c*t+d));}
+float sstep(float a,float b,float x){return smoothstep(a,b,x);}
+mat3 lookAt(vec3 ro,vec3 ta,float roll){
+  vec3 f=normalize(ta-ro);
+  vec3 r=normalize(cross(f,vec3(sin(roll),cos(roll),0.)));
+  return mat3(r,cross(r,f),f);
+}
+float sdBox(vec3 p,vec3 b){vec3 q=abs(p)-b;return length(max(q,0.))+min(max(q.x,max(q.y,q.z)),0.);}
+
+/* ── 00 · nebula (0-16s) ─────────────────────────── */
+float starLayer(vec2 uv,float n,float t){
+  vec2 g=uv*n; vec2 id=floor(g),f=fract(g)-.5;
+  float h=hash21(id);
+  if(h<0.88) return 0.;
+  vec2 o=vec2(hash21(id+7.1),hash21(id+13.7))-.5;
+  float d=length(f-o*.8);
+  float tw=.6+.4*sin(t*(1.5+h*5.)+h*44.);
+  return smoothstep(.06,.0,d)*tw*(h-.88)*8.3;
+}
+vec3 scNebula(vec2 uv){
+  float t=uT;
+  float zoom=1.7-0.35*sstep(0.,16.,t);
+  vec2 p=uv*zoom+vec2(t*.018,t*.008);
+  vec2 q=vec2(fbm(p+vec2(0.,t*.04)),fbm(p+vec2(5.2,1.3)));
+  vec2 r=vec2(fbm(p+2.3*q+vec2(1.7,9.2)+t*.02),fbm(p+2.3*q+vec2(8.3,2.8)));
+  float f=fbm(p+2.6*r);
+  vec3 col=mix(vec3(.008,.012,.035),vec3(.10,.05,.26),clamp(f*f*2.6,0.,1.));
+  col=mix(col,vec3(.15,.42,.65),sstep(.35,.85,q.y)*f*.9);
+  col=mix(col,vec3(.75,.30,.45),sstep(.45,1.,r.x)*f*.7);
+  col+=vec3(1.,.9,.8)*starLayer(uv+vec2(t*.004,0.),22.,t);
+  col+=vec3(.7,.8,1.)*starLayer(uv*1.7+vec2(9.,t*.007),34.,t)*.6;
+  // slow pulse of a distant engine
+  col+=vec3(.9,.5,.3)*exp(-length(uv-vec2(.55,.1))*4.)*(.04+.03*sin(t*.8));
+  col*=sstep(0.,3.,t);          // fade in from black
+  col*=1.+.4*sstep(14.5,16.,t); // pre-drop lift
+  return col;
+}
+
+/* ── 01 · machine core tunnel (16-32s) ───────────── */
+vec3 scTunnel(vec2 uv){
+  float t=uT-16.;
+  uv=rot(t*.09)*uv;
+  float r=max(length(uv),1e-4);
+  float depth=.35/r;
+  float a=atan(uv.y,uv.x)+depth*.35+t*.22;
+  float z=depth+t*2.4;
+  float seg=8.;
+  float sa=abs(mod(a,2.*PI/seg)-PI/seg);   // kaleido fold
+  vec2 st=vec2(sa*3.,z);
+  vec2 cell=floor(st*vec2(3.,1.25));
+  float shade=.35+.65*hash21(cell);        // per-panel variance
+  vec2 fr=fract(st*vec2(3.,1.25));
+  float seam=max(sstep(.955,.985,fr.x),sstep(.94,.975,fr.y));
+  float atten=exp(-depth*.42);             // deep = dark
+  float grime=.35+1.3*fbm(st*vec2(2.2,.9)+cell*.7);
+  vec3 col=vec3(.045,.055,.075)*shade*atten*grime;
+  col*=1.-.45*sstep(.85,1.5,r);            // near-wall falloff top/bottom
+  float flow=pow(.5+.5*sin(z*1.5-t*8.),3.);          // energy running the seams
+  col+=vec3(1.,.42,.10)*seam*atten*(.25+.9*flow);
+  float ring=sstep(.90,.995,1.-abs(fract(z*.5)*2.-1.));// light rings rushing past
+  col+=vec3(.3,.7,1.)*ring*atten*(.3+1.5*uKick);
+  col+=vec3(.4,.7,1.)*exp(-r*5.)*(.15+.9*uKick);      // core ahead
+  col*=sstep(0.,.6,t);
+  return col;
+}
+
+/* ── 02 · the foundry — infinite menger (32-56s) ── */
+float menger(vec3 p,out float trap){
+  float d=sdBox(p,vec3(1.));
+  float s=1.; trap=1e9;
+  for(int i=0;i<4;i++){
+    vec3 a=mod(p*s,2.)-1.;
+    s*=3.;
+    vec3 q=abs(1.-3.*abs(a));
+    float da=max(q.x,q.y),db=max(q.y,q.z),dc=max(q.z,q.x);
+    float c=(min(da,min(db,dc))-1.)/s;
+    d=max(d,c);
+    trap=min(trap,length(a));
+  }
+  return d;
+}
+float mapCity(vec3 p,out float trap){
+  p.xy*=rot(.06*sin(p.z*.08));           // gentle spine bend
+  vec3 q=mod(p,4.)-2.;
+  return menger(q*.62,trap)/.62;
+}
+vec3 scCity(vec2 uv){
+  float t=uT-32.;
+  vec3 ro=vec3(.22*sin(t*.5),.2*sin(t*.33+2.),t*1.5);
+  vec3 ta=ro+vec3(.35*sin(t*.22),.3*cos(t*.18),2.);
+  mat3 cam=lookAt(ro,ta,.08*sin(t*.3));
+  vec3 rd=cam*normalize(vec3(uv,1.25));
+  float tr=0.,dist=0.,glow=0.;
+  vec3 pos=ro;
+  for(int i=0;i<96;i++){
+    pos=ro+rd*dist;
+    float d=mapCity(pos,tr);
+    glow+=exp(-d*9.)*.005;
+    if(d<.001||dist>40.) break;
+    dist+=d*.9;
+  }
+  vec3 col;
+  float fogAmt=1.-exp(-dist*.075);
+  vec3 fog=vec3(.010,.014,.030)+vec3(.5,.16,.05)*glow*1.2;
+  if(dist>40.){
+    col=fog;
+  }else{
+    float tt;
+    vec2 e=vec2(.0015,0.);
+    vec3 n=normalize(vec3(
+      mapCity(pos+e.xyy,tt)-mapCity(pos-e.xyy,tt),
+      mapCity(pos+e.yxy,tt)-mapCity(pos-e.yxy,tt),
+      mapCity(pos+e.yyx,tt)-mapCity(pos-e.yyx,tt)));
+    vec3 ld=normalize(vec3(.5,.8,-.35));
+    float dif=max(dot(n,ld),0.);
+    float ao=clamp(tr*1.2,0.,1.);
+    float spe=pow(max(dot(reflect(rd,n),ld),0.),24.);
+    vec3 alb=mix(vec3(.022,.026,.034),vec3(.09,.10,.12),ao);
+    // emissive windows in the lattice
+    float win=sstep(.94,.985,sin(pos.x*9.)*sin(pos.y*9.)*sin(pos.z*4.5));
+    vec3 em=pal(floor(pos.z*.25)*.13,vec3(.5),vec3(.5),vec3(1.),vec3(.0,.33,.67));
+    col=alb*(dif*vec3(1.,.9,.8)*1.1+vec3(.05,.08,.14))*ao+spe*.3*ao;
+    col+=em*win*(1.4+2.5*uKick)*ao;
+    col+=vec3(1.,.32,.06)*exp(-tr*8.)*1.2;   // furnace veins, only deep in the folds
+  }
+  col=mix(col,fog,fogAmt);
+  col+=vec3(1.,.5,.2)*glow*(.6+.9*uKick);
+  col*=sstep(0.,.5,t);
+  return col;
+}
+
+/* ── 03 · solar wind — gyroid sea (56-72s) ──────── */
+float mapSea(vec3 p){
+  vec3 q=p*.85;
+  float g=dot(sin(q+vec3(0.,uT*.22,0.)),cos(q.zxy));
+  return max(g*.26,p.y-1.15);
+}
+vec3 seaSky(vec3 rd,vec3 sd){
+  float sun=clamp(dot(rd,sd),0.,1.);
+  vec3 col=mix(vec3(.16,.05,.10),vec3(.03,.02,.08),sstep(0.,.5,rd.y));
+  col+=vec3(1.,.45,.15)*pow(sun,7.)*.55;
+  col+=vec3(1.,.6,.25)*pow(sun,40.)*1.3;
+  col+=vec3(1.,.85,.6)*sstep(.9985,.9993,sun)*24.;   // the disc
+  col+=vec3(.9,.3,.1)*exp(-abs(rd.y)*9.)*.30;        // horizon haze
+  return col;
+}
+vec3 scSea(vec2 uv){
+  float t=uT-56.;
+  vec3 sd=normalize(vec3(.12*sin(t*.05),.10,1.));
+  vec3 ro=vec3(0.,2.5+.15*sin(t*.4),t*1.1);
+  vec3 ta=ro+vec3(.3*sin(t*.1),-.42,1.);
+  mat3 cam=lookAt(ro,ta,.02*sin(t*.2));
+  vec3 rd=cam*normalize(vec3(uv,1.3));
+  float dist=0.; vec3 pos=ro;
+  for(int i=0;i<90;i++){
+    pos=ro+rd*dist;
+    float d=mapSea(pos);
+    if(d<.0015||dist>60.) break;
+    dist+=d*.85;
+  }
+  vec3 col;
+  if(dist>60.){
+    col=seaSky(rd,sd);
+  }else{
+    vec2 e=vec2(.002,0.);
+    vec3 n=normalize(vec3(
+      mapSea(pos+e.xyy)-mapSea(pos-e.xyy),
+      mapSea(pos+e.yxy)-mapSea(pos-e.yxy),
+      mapSea(pos+e.yyx)-mapSea(pos-e.yyx)));
+    float dif=max(dot(n,sd),0.);
+    float fre=pow(1.-max(dot(n,-rd),0.),4.);
+    float spe=pow(max(dot(reflect(rd,n),sd),0.),36.);
+    float hgt=sstep(-2.,1.15,pos.y);
+    vec3 alb=mix(vec3(.02,.02,.03),vec3(.09,.06,.07),hgt);
+    col=alb*(dif*vec3(1.,.5,.25)*1.4+vec3(.05,.06,.12));
+    col+=vec3(1.,.55,.2)*spe*1.6;
+    col+=vec3(1.,.4,.15)*fre*.55;
+    col=mix(col,seaSky(rd,sd),1.-exp(-dist*.035));   // aerial fade
+  }
+  col*=sstep(0.,.8,t);
+  return col;
+}
+
+/* ── 04 · escape velocity — apollonian (72-104s) ── */
+float mapKali(vec3 p,out float trap){
+  float k=1.55+.045*sin(uT*.11);
+  float sc=1.; trap=1e9;
+  for(int i=0;i<7;i++){
+    p=-1.+2.*fract(.5*p+.5);
+    float r2=max(dot(p,p),1e-6);
+    trap=min(trap,r2);
+    float f=k/r2;
+    p*=f; sc*=f;
+  }
+  return .25*abs(p.y)/sc;
+}
+vec3 scKali(vec2 uv){
+  float t=uT-72.;
+  float bar=floor(uT/2.);
+  vec3 ro=vec3(.52+.28*sin(t*.10),.55+.22*cos(t*.083),t*.085);
+  vec3 ta=ro+vec3(sin(t*.06),.35*cos(t*.052),1.);
+  mat3 cam=lookAt(ro,ta,.15*sin(t*.07));
+  vec3 rd=cam*normalize(vec3(uv,1.15));
+  float dist=0.,tr=0.,glow=0.; vec3 pos=ro;
+  for(int i=0;i<110;i++){
+    pos=ro+rd*dist;
+    float d=mapKali(pos,tr);
+    glow+=exp(-d*130.)*.0025;
+    if(d<.0004||dist>7.) break;
+    dist+=d*.6;
+  }
+  vec3 col;
+  vec3 deep=vec3(.008,.008,.02);
+  if(dist>7.){
+    col=deep;
+  }else{
+    float tt;
+    vec2 e=vec2(.0006,0.);
+    vec3 n=normalize(vec3(
+      mapKali(pos+e.xyy,tt)-mapKali(pos-e.xyy,tt),
+      mapKali(pos+e.yxy,tt)-mapKali(pos-e.yxy,tt),
+      mapKali(pos+e.yyx,tt)-mapKali(pos-e.yyx,tt)));
+    vec3 ld=normalize(vec3(.4,.75,-.3));
+    float dif=max(dot(n,ld),0.);
+    float rim=pow(1.-max(dot(n,-rd),0.),3.);
+    vec3 base=mix(vec3(.03,.07,.22),vec3(1.,.42,.08),pow(sstep(.28,.72,sqrt(tr)),2.));
+    base*=.90+.20*sin(bar*.6+vec3(0.,1.2,2.6));   // subtle hue drift per bar
+    float ao=exp(-dist*.55);
+    col=base*(pow(dif,1.4)*vec3(1.15,.95,.75)+vec3(.03,.06,.16)*.7)*ao;
+    col+=vec3(.4,.65,1.)*rim*(.30+1.0*uKick)*ao;
+    col+=vec3(1.,.7,.4)*pow(max(dot(reflect(rd,n),ld),0.),20.)*.45*ao;
+    col=mix(col,deep,1.-exp(-dist*.35));
+  }
+  vec3 gcol=vec3(1.,.55,.22);
+  col+=gcol*glow*(.8+1.6*uKick)*uEnergy;
+  col*=sstep(0.,.5,t);
+  return col;
+}
+
+/* ── 05 · heliopause — the monolith (104-128s) ──── */
+float mapMono(vec3 p){
+  float mono=sdBox(p-vec3(0.,2.03,0.),vec3(.9,2.03,.225));  // 4:9:1
+  return min(p.y,mono);
+}
+vec3 monoSky(vec3 rd,float t){
+  vec3 col=mix(vec3(.012,.015,.04),vec3(.002,.002,.006),sstep(0.,.6,rd.y));
+  float band=exp(-abs(rd.y+.02)*14.);
+  col+=vec3(1.,.42,.12)*band*.75;                      // solar side
+  col+=vec3(.2,.5,.9)*exp(-abs(rd.y-.10)*10.)*.14;     // interstellar veil
+  vec2 sp=rd.xz/max(rd.y,.01);
+  if(rd.y>.02) col+=vec3(.9,.95,1.)*starLayer(sp*.4,14.,t)*sstep(.02,.2,rd.y);
+  return col;
+}
+vec3 monoShade(vec3 pos,vec3 rd,vec3 n,float t){
+  vec3 ld=normalize(vec3(.25,.18,.95));                // low sun behind
+  float dif=max(dot(n,ld),0.);
+  float rim=pow(1.-max(dot(n,-rd),0.),5.);
+  vec3 col=vec3(.015,.015,.02)*(dif*.6+.25);
+  col+=vec3(1.,.5,.2)*rim*.9;
+  col+=vec3(.3,.5,.9)*pow(max(dot(reflect(rd,n),ld),0.),40.)*.6;
+  return col;
+}
+vec3 scMono(vec2 uv){
+  float t=uT-104.;
+  float dolly=sstep(0.,22.,t);
+  vec3 ro=vec3(2.6-1.2*dolly,1.15+.85*dolly,-11.5+4.5*dolly);
+  vec3 ta=vec3(0.,1.9,0.);
+  mat3 cam=lookAt(ro,ta,0.);
+  vec3 rd=cam*normalize(vec3(uv,1.5));
+  vec3 col=vec3(0.);
+  vec3 o=ro,d=rd; float atten=1.;
+  for(int b=0;b<2;b++){
+    float dist=0.; vec3 pos=o; bool hit=false;
+    for(int i=0;i<80;i++){
+      pos=o+d*dist;
+      float h=mapMono(pos);
+      if(h<.002){hit=true;break;}
+      if(dist>60.) break;
+      dist+=h*.95;
+    }
+    if(!hit){ col+=monoSky(d,t)*atten; break; }
+    vec2 e=vec2(.002,0.);
+    vec3 n=normalize(vec3(
+      mapMono(pos+e.xyy)-mapMono(pos-e.xyy),
+      mapMono(pos+e.yxy)-mapMono(pos-e.yxy),
+      mapMono(pos+e.yyx)-mapMono(pos-e.yyx)));
+    bool ground=pos.y<.01;
+    if(ground){
+      // rippled obsidian plain: shade + one reflection bounce
+      vec2 w=pos.xz*1.4;
+      n=normalize(n+vec3(sin(w.x+t*.4),0.,cos(w.y*1.3+t*.3))*.025);
+      float fre=.25+.75*pow(1.-max(dot(n,-d),0.),3.);
+      col+=vec3(.008,.008,.012)*atten*(1.-fre)*exp(-dist*.03);
+      atten*=fre*.85*exp(-dist*.015);
+      o=pos+n*.01;
+      d=reflect(d,n);
+    }else{
+      col+=monoShade(pos,d,n,t)*atten;
+      break;
+    }
+  }
+  col*=sstep(0.,1.2,t);
+  col*=1.-sstep(16.,23.5,t);       // long fade to black under credits
+  return col;
+}
+
+void main(){
+  vec2 uv=(2.*gl_FragCoord.xy-uRes)/uRes.y;
+  float t=uT;
+  vec3 col;
+  if     (t<16.)  col=scNebula(uv);
+  else if(t<32.)  col=scTunnel(uv);
+  else if(t<56.)  col=scCity(uv);
+  else if(t<72.)  col=scSea(uv);
+  else if(t<104.) col=scKali(uv);
+  else            col=scMono(uv);
+  fragColor=vec4(col,1.);
+}`;
+
+/* ══════════════════ post shaders ══════════════════ */
+const FS_BRIGHT=`#version 300 es
+precision highp float;
+uniform sampler2D uScene;
+uniform vec2 uRes;      // bloom buffer res
+uniform float uScale;   // adaptive render scale of scene tex
+out vec4 o;
+void main(){
+  vec2 uv=gl_FragCoord.xy/uRes;
+  vec3 c=texture(uScene,min(uv*uScale,vec2(uScale)-1.5/uRes)).rgb;
+  float l=dot(c,vec3(.299,.587,.114));
+  o=vec4(c*smoothstep(.72,1.55,l),1.);
+}`;
+const FS_BLUR=`#version 300 es
+precision highp float;
+uniform sampler2D uTex;
+uniform vec2 uRes,uDir;
+out vec4 o;
+void main(){
+  vec2 uv=gl_FragCoord.xy/uRes;
+  vec2 px=uDir/uRes;
+  vec3 c=texture(uTex,uv).rgb*.227027;
+  float w[4]; w[0]=.1945946;w[1]=.1216216;w[2]=.054054;w[3]=.016216;
+  for(int i=1;i<5;i++){
+    c+=texture(uTex,uv+px*float(i)*1.4).rgb*w[i-1];
+    c+=texture(uTex,uv-px*float(i)*1.4).rgb*w[i-1];
+  }
+  o=vec4(c,1.);
+}`;
+const FS_POST=`#version 300 es
+precision highp float;
+uniform sampler2D uScene,uBloom;
+uniform vec2 uRes;
+uniform float uScale,uT,uFlash,uCA,uEnergy;
+out vec4 o;
+float hash(vec2 p){p=fract(p*vec2(234.34,435.345));p+=dot(p,p+34.23);return fract(p.x*p.y);}
+vec3 aces(vec3 x){return clamp((x*(2.51*x+.03))/(x*(2.43*x+.59)+.14),0.,1.);}
+vec3 samp(vec2 u){
+  vec2 mx=vec2(uScale)-1.5/uRes;
+  return texture(uScene,min(u*uScale,mx)).rgb;
+}
+void main(){
+  vec2 uv=gl_FragCoord.xy/uRes;
+  vec2 cd=(uv-.5)*uCA;
+  vec3 c;
+  c.r=samp(uv+cd).r;
+  c.g=samp(uv).g;
+  c.b=samp(uv-cd).b;
+  vec3 bloom=texture(uBloom,uv).rgb;
+  c+=bloom*(0.55+0.5*uEnergy);
+  c=aces(c*1.18);
+  float vig=1.-.42*pow(length(uv-.5)*1.35,2.4);
+  c*=vig;
+  c=mix(c,vec3(1.,.98,.94),uFlash*.85);
+  c+=(hash(gl_FragCoord.xy+fract(uT)*vec2(113.,271.))-.5)*.026;
+  c=pow(max(c,0.),vec3(1./2.2));
+  o=vec4(c,1.);
+}`;
+
+const pScene=prog(FS_SCENE), pBright=prog(FS_BRIGHT),
+      pBlur=prog(FS_BLUR),   pPost=prog(FS_POST);
+const U=(p,n)=>gl.getUniformLocation(p,n);
+const uS={res:U(pScene,'uRes'),t:U(pScene,'uT'),kick:U(pScene,'uKick'),en:U(pScene,'uEnergy')};
+const uB={scene:U(pBright,'uScene'),res:U(pBright,'uRes'),scale:U(pBright,'uScale')};
+const uL={tex:U(pBlur,'uTex'),res:U(pBlur,'uRes'),dir:U(pBlur,'uDir')};
+const uP={scene:U(pPost,'uScene'),bloom:U(pPost,'uBloom'),res:U(pPost,'uRes'),
+          scale:U(pPost,'uScale'),t:U(pPost,'uT'),flash:U(pPost,'uFlash'),
+          ca:U(pPost,'uCA'),en:U(pPost,'uEnergy')};
+
+/* framebuffers */
+let W=0,H=0,QW=0,QH=0;
+let texScene=null,fbScene=null,texA=null,fbA=null,texB=null,fbB=null;
+function mkTarget(w,h){
+  const t=gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D,t);
+  gl.texStorage2D(gl.TEXTURE_2D,1,hdrFmt,w,h);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+  const f=gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER,f);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,t,0);
+  if(gl.checkFramebufferStatus(gl.FRAMEBUFFER)!==gl.FRAMEBUFFER_COMPLETE)
+    fail('Framebuffer incomplete — GPU cannot render this demo.');
+  return [t,f];
+}
+const oc=document.getElementById('ov');
+const octx=oc.getContext('2d');
+let CW=0,CH=0;   // overlay css-pixel size
+function resize(){
+  const dpr=Math.min(devicePixelRatio||1,2);
+  const cw=innerWidth,ch=innerHeight;
+  let w=Math.round(cw*dpr),h=Math.round(ch*dpr);
+  const capW=1920;
+  if(w>capW){h=Math.round(h*capW/w);w=capW;}
+  if(w===W&&h===H) return;
+  W=w;H=h;QW=Math.max(1,w>>2);QH=Math.max(1,h>>2);
+  glc.width=W;glc.height=H;
+  for(const f of [fbScene,fbA,fbB]) if(f) gl.deleteFramebuffer(f);
+  for(const t of [texScene,texA,texB]) if(t) gl.deleteTexture(t);
+  [texScene,fbScene]=mkTarget(W,H);
+  [texA,fbA]=mkTarget(QW,QH);
+  [texB,fbB]=mkTarget(QW,QH);
+  CW=cw;CH=ch;
+  oc.width=Math.round(cw*Math.min(devicePixelRatio||1,2));
+  oc.height=Math.round(ch*Math.min(devicePixelRatio||1,2));
+  octx.setTransform(oc.width/cw,0,0,oc.height/ch,0,0);
+  glowCache.clear();
+}
+addEventListener('resize',resize);
+glc.addEventListener('webglcontextlost',e=>{e.preventDefault();running=false;fail('WebGL context lost — reload to restart the demo.');});
+
+/* ══════════════════ sync signals ══════════════════ */
+function kickEnv(t){
+  const drums=(t>=16&&t<56)||(t>=72&&t<104);
+  if(!drums) return 0;
+  const p=(t%SPB)/SPB;
+  return Math.exp(-5.5*p);
+}
+function sectionIdx(t){let i=0;while(i<SECT.length-2&&t>=SECT[i+1])i++;return i;}
+function flashAt(t){
+  let f=0;
+  for(const b of [16,32,56,72,104]) if(t>=b) f=Math.max(f,Math.exp(-9*(t-b)));
+  return f;
+}
+
+/* ══════════════════ render loop ══════════════════ */
+let scale=1.0, emaMs=16, lastFrameAt=0;
+function draw(t){
+  const kick=kickEnv(t), en=ENERGY[sectionIdx(t)], flash=flashAt(t);
+  const sw=Math.max(1,Math.round(W*scale)), shh=Math.max(1,Math.round(H*scale));
+  // 1 · scene → HDR target (adaptive sub-viewport)
+  gl.bindFramebuffer(gl.FRAMEBUFFER,fbScene);
+  gl.viewport(0,0,sw,shh);
+  gl.useProgram(pScene);
+  gl.uniform2f(uS.res,sw,shh);
+  gl.uniform1f(uS.t,t);
+  gl.uniform1f(uS.kick,kick);
+  gl.uniform1f(uS.en,en);
+  gl.drawArrays(gl.TRIANGLES,0,3);
+  // 2 · bright pass → quarter A
+  gl.bindFramebuffer(gl.FRAMEBUFFER,fbA);
+  gl.viewport(0,0,QW,QH);
+  gl.useProgram(pBright);
+  gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,texScene);
+  gl.uniform1i(uB.scene,0);
+  gl.uniform2f(uB.res,QW,QH);
+  gl.uniform1f(uB.scale,scale);
+  gl.drawArrays(gl.TRIANGLES,0,3);
+  // 3+4 · separable blur A→B→A
+  gl.useProgram(pBlur);
+  gl.uniform2f(uL.res,QW,QH);
+  gl.bindFramebuffer(gl.FRAMEBUFFER,fbB);
+  gl.bindTexture(gl.TEXTURE_2D,texA);
+  gl.uniform1i(uL.tex,0);
+  gl.uniform2f(uL.dir,1,0);
+  gl.drawArrays(gl.TRIANGLES,0,3);
+  gl.bindFramebuffer(gl.FRAMEBUFFER,fbA);
+  gl.bindTexture(gl.TEXTURE_2D,texB);
+  gl.uniform2f(uL.dir,0,1);
+  gl.drawArrays(gl.TRIANGLES,0,3);
+  // 5 · composite → screen
+  gl.bindFramebuffer(gl.FRAMEBUFFER,null);
+  gl.viewport(0,0,W,H);
+  gl.useProgram(pPost);
+  gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,texScene);
+  gl.activeTexture(gl.TEXTURE1);gl.bindTexture(gl.TEXTURE_2D,texA);
+  gl.uniform1i(uP.scene,0);gl.uniform1i(uP.bloom,1);
+  gl.uniform2f(uP.res,W,H);
+  gl.uniform1f(uP.scale,scale);
+  gl.uniform1f(uP.t,t);
+  gl.uniform1f(uP.flash,flash);
+  gl.uniform1f(uP.ca,0.0035+flash*0.028+kick*0.0025*en);
+  gl.uniform1f(uP.en,en);
+  gl.drawArrays(gl.TRIANGLES,0,3);
+  gl.activeTexture(gl.TEXTURE0);
+}
+
+/* ══════════════════ typography overlay ══════════════════ */
+const glowCache=new Map();
+function glowText(key,text,px,color,tracking){
+  let e=glowCache.get(key);
+  if(!e){
+    const c=document.createElement('canvas');
+    const g=c.getContext('2d');
+    const f=`600 ${px}px "Helvetica Neue",Arial,sans-serif`;
+    g.font=f;
+    let wtot=0;
+    for(const ch of text) wtot+=g.measureText(ch).width+tracking;
+    c.width=Math.ceil(wtot+px);c.height=Math.ceil(px*1.9);
+    const g2=c.getContext('2d');
+    g2.font=f;g2.fillStyle=color;g2.textBaseline='middle';
+    let x=px*.5;
+    for(const ch of text){g2.fillText(ch,x,c.height/2);x+=g2.measureText(ch).width+tracking;}
+    // real halo: two-step downscale then upscale (bilinear blur), stays aligned
+    const t1=document.createElement('canvas');
+    t1.width=Math.max(1,c.width>>2);t1.height=Math.max(1,c.height>>2);
+    t1.getContext('2d').drawImage(c,0,0,t1.width,t1.height);
+    const b=document.createElement('canvas');
+    b.width=Math.max(1,c.width>>3);b.height=Math.max(1,c.height>>3);
+    b.getContext('2d').drawImage(t1,0,0,b.width,b.height);
+    e={s:c,b};
+    glowCache.set(key,e);
+  }
+  return e;
+}
+function drawGlow(e,cx,cy,alpha,glow){
+  const w=e.s.width,h=e.s.height;
+  octx.globalAlpha=alpha*glow;
+  octx.drawImage(e.b,cx-w/2,cy-h/2,w,h);
+  octx.drawImage(e.b,cx-w/2,cy-h/2,w,h);
+  octx.globalAlpha=alpha;
+  octx.drawImage(e.s,cx-w/2,cy-h/2);
+  octx.globalAlpha=1;
+}
+function caption(t0,t,label){
+  const a=sstep(t0+.4,t0+1.2,t)*(1-sstep(t0+6.5,t0+8,t));
+  if(a<=0) return;
+  const n=Math.floor(clamp((t-t0-.4)*22,0,label.length));
+  const shown=label.slice(0,n)+((n<label.length&&(t*3%1)<.6)?'█':'');
+  octx.font='500 13px ui-monospace,Menlo,monospace';
+  octx.fillStyle=`rgba(180,210,235,${a*.9})`;
+  octx.textAlign='left';octx.textBaseline='alphabetic';
+  octx.fillText(shown,28,CH-30);
+}
+const GREETS='farbrausch · conspiracy · ASD · mercury · logicoma · cncd · fairlight · mfx · still · orange · rgba';
+function overlay(t){
+  octx.clearRect(0,0,CW,CH);
+  const px=Math.min(CW*.085,86);
+  if(t<16.5){
+    const a=sstep(3,6,t)*(1-sstep(13,15.4,t));
+    if(a>0){
+      const c1=glowText('title'+px,'HELIOPAUSE',px,'#cfe3ff',px*.26);
+      drawGlow(c1,CW/2,CH*.44,a,.5);
+      const c2=glowText('sub','A   F A B L E   P R O D U C T I O N',13,'#8fb0d0',3);
+      drawGlow(c2,CW/2,CH*.44+px*.95,a*.85,.4);
+    }
+  }
+  caption(16,t,'01 · descent — machine core');
+  caption(32,t,'02 · the foundry');
+  caption(56,t,'03 · solar wind');
+  caption(72,t,'04 · escape velocity');
+  caption(104,t,'05 · heliopause — the edge of the wind');
+  if(t>=107&&t<119){
+    const a=sstep(107,109,t)*(1-sstep(117,119,t));
+    octx.textAlign='center';
+    octx.font='500 12px ui-monospace,Menlo,monospace';
+    octx.fillStyle=`rgba(150,185,215,${a*.8})`;
+    octx.fillText('— greetings —',CW/2,CH-64);
+    octx.fillStyle=`rgba(200,220,240,${a*.9})`;
+    octx.fillText(GREETS,CW/2,CH-42);
+  }
+  if(t>=120.5){
+    const a=sstep(120.5,122.5,t)*(1-sstep(126,127.6,t));
+    if(a>0){
+      const c1=glowText('cr1','H E L I O P A U S E',26,'#cfe3ff',8);
+      drawGlow(c1,CW/2,CH*.42,a,.4);
+      octx.textAlign='center';
+      octx.font='500 13px ui-monospace,Menlo,monospace';
+      octx.fillStyle=`rgba(170,200,225,${a*.85})`;
+      octx.fillText('code · visuals · music — claude (fable 5)',CW/2,CH*.42+44);
+      octx.fillStyle=`rgba(120,150,180,${a*.7})`;
+      octx.fillText('webgl2 + webaudio · one file · no assets · 2026',CW/2,CH*.42+68);
+    }
+  }
+}
+
+/* ══════════════════ music ══════════════════ */
+const SR=44100;
+const NF=m=>440*Math.pow(2,(m-69)/12);
+/* pad voicings, arp tones, bass roots — Am F C G */
+const PAD =[[57,60,64,71],[53,57,60,67],[48,55,62,64],[55,59,62,69]];
+const ARP =[[57,60,64,69],[53,57,60,65],[60,64,67,72],[55,59,62,67]];
+const ROOT=[45,41,48,43];
+/* 8-bar lead phrase: [startBeat, midi, beats] */
+const MEL=[
+ [0,76,1.5],[1.5,72,.5],[2,69,1],[3,71,1],
+ [4,72,2],[6,69,1],[7,67,1],
+ [8,67,1.5],[9.5,69,.5],[10,71,1],[11,72,1],
+ [12,74,2.5],
+ [16,76,1.5],[17.5,72,.5],[18,69,1],[19,71,1],
+ [20,72,1.5],[21.5,74,.5],[22,76,1],[23,77,1],
+ [24,79,1.5],[25.5,76,.5],[26,74,1],[27,72,1],
+ [28,71,2],[30,74,1],[31,71,1],
+];
+/* pure-JS softsynth — a WebAudio node graph at this note density renders
+   slower than realtime offline (cost ∝ nodes-ever × duration), so the
+   track is synthesized sample-by-sample into Float32Arrays instead. */
+async function renderSong(onProgress){
+  const N=SR*DUR, TAU=Math.PI*2;
+  const mel=new Float32Array(N), drm=new Float32Array(N),
+        dlyS=new Float32Array(N), revS=new Float32Array(N);
+  const duckC=new Float32Array(N); duckC.fill(1);
+  const tick=()=>new Promise(r=>setTimeout(r,0));
+  /* biquad, transposed DF2 + RBJ coefficients */
+  function Biq(c){this.c=c;this.z1=0;this.z2=0;}
+  Biq.prototype.p=function(x){const c=this.c,y=c[0]*x+this.z1;
+    this.z1=c[1]*x-c[3]*y+this.z2; this.z2=c[2]*x-c[4]*y; return y;};
+  const lpC=(f,Q)=>{const w=TAU*f/SR,co=Math.cos(w),al=Math.sin(w)/(2*Q),a0=1+al;
+    return [(1-co)/2/a0,(1-co)/a0,(1-co)/2/a0,-2*co/a0,(1-al)/a0];};
+  const hpC=(f,Q)=>{const w=TAU*f/SR,co=Math.cos(w),al=Math.sin(w)/(2*Q),a0=1+al;
+    return [(1+co)/2/a0,-(1+co)/a0,(1+co)/2/a0,-2*co/a0,(1-al)/a0];};
+  const bpC=(f,Q)=>{const w=TAU*f/SR,co=Math.cos(w),al=Math.sin(w)/(2*Q),a0=1+al;
+    return [al/a0,0,-al/a0,-2*co/a0,(1-al)/a0];};
+  const rnd=()=>Math.random()*2-1;
+  /* ── drums → drm bus ── */
+  function kick(t0){
+    const s0=Math.round(t0*SR), n=Math.round(.42*SR);
+    let ph=0;
+    for(let i=0;i<n;i++){const s=s0+i;if(s>=N)break;
+      const tt=i/SR, f=42+113*Math.exp(-tt/.045);
+      ph+=TAU*f/SR;
+      drm[s]+=Math.sin(ph)*Math.exp(-tt*16.)+rnd()*Math.exp(-tt*600.)*.25;
+    }
+    for(let i=0;i<n;i++){const s=s0+i;if(s>=N)break;   // sidechain notch
+      const g=.33+.67*(i/n); if(duckC[s]>g)duckC[s]=g;
+    }
+  }
+  function snare(t0,vel){
+    const s0=Math.round(t0*SR), n=Math.round(.2*SR);
+    const bp=new Biq(bpC(1800,.8));
+    let ph=0;
+    for(let i=0;i<n;i++){const s=s0+i;if(s>=N)break;
+      const tt=i/SR, f=140+70*Math.exp(-tt/.03);
+      ph+=TAU*f/SR;
+      const pf=ph/TAU-Math.floor(ph/TAU);
+      const tri=(2.*Math.abs(2.*pf-1.)-1.)*Math.exp(-tt*60.)*.5;
+      const nz=bp.p(rnd())*Math.exp(-tt*38.)*.9;
+      drm[s]+=(nz+tri)*vel*.55; revS[s]+=nz*vel*.08;
+    }
+  }
+  function hat(t0,open,vel){
+    const s0=Math.round(t0*SR), n=Math.round((open?.26:.05)*SR);
+    const hp=new Biq(hpC(8200,.7)), k=open?26.:150.;
+    for(let i=0;i<n;i++){const s=s0+i;if(s>=N)break;
+      drm[s]+=hp.p(rnd())*Math.exp(-(i/SR)*k)*.16*vel;
+    }
+  }
+  function impact(t0){
+    const s0=Math.round(t0*SR), n=Math.round(1.4*SR);
+    let ph=0,lp=0;
+    for(let i=0;i<n;i++){const s=s0+i;if(s>=N)break;
+      const tt=i/SR, f=28+36*Math.exp(-tt/.30);
+      ph+=TAU*f/SR;
+      const boom=Math.sin(ph)*Math.exp(-tt*6.3)*.85;
+      const fc=300+5700*Math.exp(-tt/.35);
+      lp+=(1-Math.exp(-TAU*fc/SR))*(rnd()-lp);
+      const spl=lp*Math.exp(-tt*4.6)*.4;
+      drm[s]+=boom+spl; revS[s]+=spl*.5;
+    }
+  }
+  function riser(t0,dur,vol){
+    const s0=Math.round(t0*SR), n=Math.round(dur*SR);
+    const bp=new Biq(bpC(280,1.1));
+    for(let i=0;i<n;i++){const s=s0+i;if(s>=N)break;
+      const u=i/n;
+      if((i&255)===0) bp.c=bpC(280*Math.pow(5200/280,u),1.1);
+      const v=bp.p(rnd())*u*u*u*vol;
+      drm[s]+=v; revS[s]+=v*.5;
+    }
+  }
+  /* ── melodics → mel bus (sidechained) ── */
+  function bassNote(t0,midi,dur){
+    const s0=Math.round(t0*SR), n=Math.round((dur+.02)*SR), f=NF(midi);
+    const lp=new Biq(lpC(760,.9));
+    let p1=0,p2=0;
+    const i1=2*f/SR, i2=f/SR;
+    for(let i=0;i<n;i++){const s=s0+i;if(s>=N)break;
+      const tt=i/SR;
+      p1+=i1; if(p1>=2)p1-=2;
+      p2+=i2; if(p2>=2)p2-=2;
+      const env=Math.min(tt/.012,1)*(tt>dur-.05?Math.exp(-(tt-dur+.05)*80.):1);
+      mel[s]+=lp.p((p1-1)+.5*(p2<1?1:-1))*env*.42;
+    }
+  }
+  function pluck(t0,midi,vel){
+    const s0=Math.round(t0*SR), n=Math.round(.26*SR), f=NF(midi);
+    const lp=new Biq(lpC(2800,1.4));
+    let ph=0; const inc=2*f/SR;
+    for(let i=0;i<n;i++){const s=s0+i;if(s>=N)break;
+      const tt=i/SR;
+      if((i&63)===0) lp.c=lpC(480+2320*Math.exp(-tt/.055),1.4);
+      ph+=inc; if(ph>=2)ph-=2;
+      const v=lp.p(ph-1)*Math.exp(-tt*29.)*.30*vel;
+      mel[s]+=v; dlyS[s]+=v*.5;
+    }
+  }
+  function padChord(t0,midis,dur,vol){
+    const s0=Math.round(t0*SR), n=Math.round(dur*SR);
+    for(const m of midis){
+      const f=NF(m);
+      const lp=new Biq(lpC(1050,.71));
+      let p1=0,p2=0;
+      const i1=2*f*Math.pow(2,-.09/12)/SR, i2=2*f*Math.pow(2,.09/12)/SR;
+      for(let i=0;i<n;i++){const s=s0+i;if(s>=N)break;
+        const tt=i/SR;
+        p1+=i1; if(p1>=2)p1-=2;
+        p2+=i2; if(p2>=2)p2-=2;
+        const env=Math.min(tt/1.1,1)*Math.min(Math.max((dur-tt)/1.3,0),1);
+        const v=lp.p((p1-1)+(p2-1))*env*vol;
+        mel[s]+=v; revS[s]+=v*.6;
+      }
+    }
+  }
+  function lead(t0,midi,dur,vel){
+    const s0=Math.round(t0*SR), n=Math.round((dur+.25)*SR), f=NF(midi);
+    const lp=new Biq(lpC(2300,.7));
+    let p1=0,p2=0,p3=0,vb=0;
+    const d1=Math.pow(2,-.09/12), d3=Math.pow(2,.09/12);
+    for(let i=0;i<n;i++){const s=s0+i;if(s>=N)break;
+      const tt=i/SR;
+      vb+=TAU*5.4/SR;
+      const fm=f*(1+.007*Math.sin(vb)*Math.min(tt/.3,1));   // vibrato
+      p1+=2*fm*d1/SR; if(p1>=2)p1-=2;
+      p2+=2*fm/SR;    if(p2>=2)p2-=2;
+      p3+=2*fm*d3/SR; if(p3>=2)p3-=2;
+      const env=Math.min(tt/.02,1)*(.77+.23*Math.exp(-tt*12.))*(tt>dur?Math.exp(-(tt-dur)*18.):1);
+      const v=lp.p((p1-1)+(p2-1)+(p3-1))*env*.11*vel;
+      mel[s]+=v; dlyS[s]+=v*.45; revS[s]+=v*.4;
+    }
+  }
+  function subDrone(t0,dur,vol){
+    const s0=Math.round(t0*SR), n=Math.round(dur*SR), f=NF(33);
+    let ph=0;
+    for(let i=0;i<n;i++){const s=s0+i;if(s>=N)break;
+      const tt=i/SR;
+      ph+=TAU*f/SR;
+      const env=Math.min(tt/(dur*.4),1)*Math.min(Math.max((dur-tt)/1.,0),1);
+      mel[s]+=Math.sin(ph)*env*vol;
+    }
+  }
+  function playPhrase(t0,vel,octUp,firstBars){
+    const lim=firstBars*4;
+    for(const [b,m,len] of MEL){
+      if(b>=lim) continue;
+      lead(t0+b*SPB,m,len*SPB*.96,vel);
+      if(octUp) lead(t0+b*SPB,m+12,len*SPB*.96,vel*.35);
+    }
+  }
+  /* ── arrangement · bar map ──
+     bars: 0-8 intro | 8-16 tunnel | 16-28 foundry | 28-36 breakdown
+           36-52 climax | 52-60 outro | 60-64 credits              */
+  subDrone(0,16.5,.30);
+  subDrone(56,16.5,.22);
+  for(let bar=0;bar<64;bar++){
+    const t=bar*BARS;
+    const ci=bar%4;
+    const inDrums=(bar>=8&&bar<28)||(bar>=36&&bar<52);
+    const climax=bar>=36&&bar<52;
+    /* pads — 2-bar harmonic rhythm through the full Am F C G cycle */
+    if(bar<60){
+      if(bar%2===0) padChord(t,PAD[(bar>>1)%4],BARS*2+.3,bar>=28&&bar<36?.075:.055);
+    }else if(bar===60){
+      padChord(t,PAD[0],BARS*4,.07);           // final Am, long fade
+      padChord(t,[45],BARS*4,.10);             // low root
+    }
+    /* bass */
+    if(inDrums||bar>=52&&bar<60){
+      for(let e=0;e<8;e++){
+        const m=(e===3||e===6)?ROOT[ci]+12:ROOT[ci];
+        bassNote(t+e*SPB*.5,m,SPB*.46);
+      }
+    }
+    /* arp */
+    if(bar>=2&&bar<60){
+      const dens=bar<8?4:(bar<16?2:(bar>=28&&bar<36?2:(bar>=52?2:1)));
+      const pat=[0,2,1,3,2,0,3,1,0,2,1,3,2,3,1,2];
+      for(let st=0;st<16;st++){
+        if(st%dens!==0) continue;
+        let m=ARP[ci][pat[st]%4];
+        if(climax&&st>=12) m+=12;
+        pluck(t+st*SPB*.25,m,climax?1:.8);
+      }
+    }
+    /* drums */
+    if(inDrums){
+      for(let b2=0;b2<4;b2++){
+        kick(t+b2*SPB);
+        hat(t+b2*SPB+SPB*.5,false,climax?1:.8);
+        if(climax) hat(t+b2*SPB+SPB*.25,false,.4);
+        if((bar>=16||climax)&&(b2===1||b2===3)) snare(t+b2*SPB,1);
+      }
+      if(bar%4===3) hat(t+3.5*SPB,true,.8);
+    }
+    /* fills into transitions */
+    if(bar===15||bar===27||bar===51){
+      for(let st=8;st<16;st++) snare(t+st*SPB*.25,.25+.09*(st-8));
+    }
+    /* lead phrases */
+    if(bar===16) playPhrase(t,1,false,8);
+    if(bar===24) playPhrase(t,.9,false,4);
+    if(bar===36) playPhrase(t,1.05,false,8);
+    if(bar===44) playPhrase(t,1.05,true,8);
+    /* breakdown whisper — phrase echo an octave down, soft */
+    if(bar===30){for(const [b,m,len] of MEL.slice(0,4)) lead(t+b*SPB*2,m-12,len*SPB*1.8,.5);}
+    if((bar&7)===7){onProgress((bar+1)/64*.7);await tick();}
+  }
+  /* risers + impacts on scene cuts */
+  riser(12,4,.14); riser(28,4,.16); riser(52,4,.10); riser(68,4,.22);
+  for(const b of [16,32,56,72,104]) impact(b);
+  impact(120);
+  /* ── fx + mixdown: ping-pong delay · schroeder reverb · duck · soft clip ── */
+  const L=new Float32Array(N), R=new Float32Array(N);
+  const D=Math.round(SPB*.75*SR);                       // dotted 8th
+  const dbL=new Float32Array(D), dbR=new Float32Array(D);
+  let dp=0,hL=0,hR=0;
+  const CT=[1557,1617,1491,1422];
+  const cbL=CT.map(x=>new Float32Array(x)), cbR=CT.map(x=>new Float32Array(x+23));
+  const cpL=[0,0,0,0],cpR=[0,0,0,0],cdL=[0,0,0,0],cdR=[0,0,0,0];
+  const AT=[225,556];
+  const abL=AT.map(x=>new Float32Array(x)), abR=AT.map(x=>new Float32Array(x+13));
+  const apL=[0,0],apR=[0,0];
+  const CHUNK=Math.ceil(N/8);
+  for(let c=0;c<8;c++){
+    const end=Math.min((c+1)*CHUNK,N);
+    for(let i=c*CHUNK;i<end;i++){
+      /* ping-pong delay, one-pole HP in the loop */
+      const oL=dbL[dp],oR=dbR[dp];
+      hL+=.06*(oL-hL); hR+=.06*(oR-hR);
+      dbL[dp]=dlyS[i]+(oR-hR)*.5;
+      dbR[dp]=(oL-hL)*.5;
+      dp++; if(dp>=D)dp=0;
+      /* schroeder: 4 damped combs + 2 allpass, decorrelated L/R */
+      const rin=revS[i]+(oL+oR)*.12;
+      let rL=0,rR=0;
+      for(let k=0;k<4;k++){
+        let b=cbL[k],p=cpL[k],o=b[p];
+        cdL[k]+=.3*(o-cdL[k]); b[p]=rin+cdL[k]*.77;
+        cpL[k]=p+1>=b.length?0:p+1; rL+=o;
+        b=cbR[k];p=cpR[k];o=b[p];
+        cdR[k]+=.3*(o-cdR[k]); b[p]=rin+cdR[k]*.77;
+        cpR[k]=p+1>=b.length?0:p+1; rR+=o;
+      }
+      rL*=.25; rR*=.25;
+      for(let k=0;k<2;k++){
+        let b=abL[k],p=apL[k],o=b[p],y=o-.5*rL;
+        b[p]=rL+.5*y; rL=y;
+        apL[k]=p+1>=b.length?0:p+1;
+        b=abR[k];p=apR[k];o=b[p];y=o-.5*rR;
+        b[p]=rR+.5*y; rR=y;
+        apR[k]=p+1>=b.length?0:p+1;
+      }
+      /* mix */
+      const dry=drm[i]+mel[i]*duckC[i];
+      L[i]=Math.tanh((dry+oL*.55+rL*.5)*1.15);
+      R[i]=Math.tanh((dry+oR*.55+rR*.5)*1.15);
+    }
+    onProgress(.7+.3*(c+1)/8); await tick();
+  }
+  /* normalize to -0.7 dBFS */
+  let pk=0;
+  for(let i=0;i<N;i++){const a=Math.abs(L[i]),b=Math.abs(R[i]);if(a>pk)pk=a;if(b>pk)pk=b;}
+  if(pk>0){const k=.92/pk;for(let i=0;i<N;i++){L[i]*=k;R[i]*=k;}}
+  const buf=new AudioBuffer({numberOfChannels:2,length:N,sampleRate:SR});
+  buf.copyToChannel(L,0); buf.copyToChannel(R,1);
+  onProgress(1);
+  return buf;
+}
+
+/* ══════════════════ conductor ══════════════════ */
+let actx=null,startAt=0,wallStart=0,running=false,ended=false;
+function songTime(){
+  if(actx) return actx.currentTime-startAt;
+  return (performance.now()-wallStart)/1000+DEV_T;
+}
+function frame(){
+  if(!running) return;
+  const t=songTime();
+  if(t>=DUR){running=false;ended=true;endCard();return;}
+  const now=performance.now();
+  if(lastFrameAt>0) emaMs=emaMs*.9+(now-lastFrameAt)*.1;   // true frame pacing incl. GPU backpressure
+  lastFrameAt=now;
+  if(t>=0) draw(Math.max(t,0));
+  overlay(Math.max(t,0));
+  if(emaMs>22&&scale>.45) scale=Math.max(.45,scale*.94);
+  else if(emaMs<17.5&&scale<1) scale=Math.min(1,scale*1.015);
+  requestAnimationFrame(frame);
+}
+function endCard(){
+  octx.clearRect(0,0,CW,CH);
+  gl.bindFramebuffer(gl.FRAMEBUFFER,null);
+  gl.viewport(0,0,W,H);gl.clearColor(0,0,0,1);gl.clear(gl.COLOR_BUFFER_BIT);
+  octx.textAlign='center';
+  const c=glowText('end','HELIOPAUSE',34,'#cfe3ff',10);
+  drawGlow(c,CW/2,CH*.45,1,.4);
+  octx.font='500 13px ui-monospace,Menlo,monospace';
+  octx.fillStyle='rgba(150,180,210,.8)';
+  octx.fillText('fin · click to run again',CW/2,CH*.45+46);
+}
+function startCard(){
+  resize();
+  octx.clearRect(0,0,CW,CH);
+  // static backdrop
+  draw(1.5);
+  const px=Math.min(CW*.085,86);
+  const c1=glowText('title'+px,'HELIOPAUSE',px,'#cfe3ff',px*.26);
+  drawGlow(c1,CW/2,CH*.42,1,.5);
+  const c2=glowText('sub','A   F A B L E   P R O D U C T I O N',13,'#8fb0d0',3);
+  drawGlow(c2,CW/2,CH*.42+px*.95,.9,.4);
+  octx.textAlign='center';
+  octx.font='500 14px ui-monospace,Menlo,monospace';
+  octx.fillStyle='rgba(200,225,250,.95)';
+  octx.fillText('▶  click to launch',CW/2,CH*.72);
+  octx.font='500 11px ui-monospace,Menlo,monospace';
+  octx.fillStyle='rgba(130,160,190,.7)';
+  octx.fillText('128 seconds · sound on · press F for fullscreen',CW/2,CH*.72+24);
+}
+function precalcCard(p,label){
+  octx.clearRect(0,0,CW,CH);
+  octx.textAlign='center';
+  octx.font='500 13px ui-monospace,Menlo,monospace';
+  octx.fillStyle='rgba(190,215,240,.9)';
+  octx.fillText(label,CW/2,CH*.5-18);
+  const bw=Math.min(CW*.4,420),bh=4,x=CW/2-bw/2,y=CH*.5+4;
+  octx.fillStyle='rgba(80,110,140,.4)';
+  octx.fillRect(x,y,bw,bh);
+  octx.fillStyle='rgba(160,210,255,.95)';
+  octx.fillRect(x,y,bw*p,bh);
+  octx.fillStyle='rgba(120,150,180,.6)';
+  octx.fillText(Math.round(p*100)+'%',CW/2,y+26);
+}
+const PRECALC_LINES=['tuning supersaws…','convolving deep space…','sequencing 64 bars…',
+  'sidechaining the void…','aligning the solar wind…','charging the monolith…'];
+let started=false;
+async function begin(){
+  if(started) return;
+  started=true;
+  if(DEV_MUTE){
+    wallStart=performance.now();running=true;requestAnimationFrame(frame);return;
+  }
+  console.log('%cHELIOPAUSE%c — a fable production · greetings from the edge of the wind',
+              'color:#8fd0ff;font-weight:bold','color:#888');
+  precalcCard(0,'synthesizing soundtrack…');
+  actx=new (window.AudioContext||window.webkitAudioContext)();
+  await actx.resume();
+  console.log('hp: audio context',actx.state,'· rendering 128s soundtrack');
+  const buf=await renderSong(p=>{
+    console.log('hp: precalc',Math.round(p*100)+'%');
+    precalcCard(p,PRECALC_LINES[Math.min(Math.floor(p*PRECALC_LINES.length),PRECALC_LINES.length-1)]);
+  });
+  console.log('hp: soundtrack ready · launching');
+  // give the progress bar one painted frame at 100%
+  await new Promise(r=>requestAnimationFrame(r));
+  const src=actx.createBufferSource();
+  src.buffer=buf;src.connect(actx.destination);
+  startAt=actx.currentTime+.15;
+  src.start(startAt);
+  running=true;
+  requestAnimationFrame(frame);
+}
+const launch=()=>begin().catch(e=>fail('Launch failed:\n'+(e&&e.message||e)));
+addEventListener('click',()=>{
+  if(ended){location.reload();return;}
+  launch();
+});
+addEventListener('keydown',e=>{
+  if(e.key==='f'||e.key==='F'){
+    if(document.fullscreenElement) document.exitFullscreen();
+    else document.documentElement.requestFullscreen().catch(()=>{});
+  }
+  if(e.key===' '||e.key==='Enter') launch();
+});
+resize();
+if(DEV_MUTE){ begin(); } else { startCard(); }
+/* debug handle for headless QA */
+window.__hp={get t(){return running?songTime():-1;},get running(){return running;},
+             get scale(){return scale;},get fps(){return 1000/emaMs;},renderSong};
+</script>
+</body>
+</html>
