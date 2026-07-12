@@ -1,0 +1,1399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NEXUS·NULL — demoparty</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;overflow:hidden;background:#000;font-family:"Courier New",Courier,monospace;color:#c8f}
+canvas{display:block;width:100%;height:100%;position:fixed;inset:0}
+#ui{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:radial-gradient(ellipse at center,#0a0618 0%,#000 70%);z-index:10;cursor:pointer;
+  transition:opacity .8s ease}
+#ui.gone{opacity:0;pointer-events:none}
+#ui h1{font-size:clamp(28px,6vw,64px);letter-spacing:.35em;font-weight:400;color:#e0f;text-shadow:
+  0 0 20px #f0f,0 0 60px #80f,0 0 120px #40a;animation:pulse 2.4s ease-in-out infinite}
+#ui p{margin-top:24px;font-size:13px;letter-spacing:.4em;color:#8af;opacity:.75}
+#ui .sub{margin-top:12px;font-size:11px;letter-spacing:.25em;color:#567;opacity:.6}
+#ui .hint{margin-top:48px;font-size:11px;letter-spacing:.3em;color:#fff;animation:blink 1.2s step-end infinite}
+@keyframes pulse{0%,100%{opacity:.85;transform:scale(1)}50%{opacity:1;transform:scale(1.02)}}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
+#hud{position:fixed;left:16px;bottom:14px;z-index:5;font-size:10px;letter-spacing:.2em;color:#6af;
+  opacity:0;transition:opacity 1s;pointer-events:none;text-shadow:0 0 8px #40f}
+#hud.on{opacity:.7}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">
+  <h1>NEXUS·NULL</h1>
+  <p>64K WEBGL DEMO</p>
+  <div class="sub">PROCEDURAL AUDIO · SDF VOLUME · POSTSTACK</div>
+  <div class="hint">▸ CLICK / TAP TO ENTER</div>
+</div>
+<div id="hud">NEXUS·NULL // T:00:00 // SCENE —</div>
+<script>
+"use strict";
+/*
+  NEXUS·NULL — self-contained demoparty demo
+  WebGL2 multi-pass: raymarch SDF worlds + plasma + tunnel + particles + bitmap text
+  Web Audio: algorithmic tracker (kick/snare/hat/bass/lead/pad/arp)
+  Timeline ~ 2:10, 128 BPM, 7 scenes + crossfades
+*/
+
+// ═══════════════════════════════════════════════════════════════
+//  CONSTANTS / TIMELINE
+// ═══════════════════════════════════════════════════════════════
+const BPM = 128;
+const BEAT = 60 / BPM;
+const BAR = BEAT * 4;
+
+// scene windows in seconds (start)
+const SC = {
+  INTRO:  0.0,    // glitch logo field
+  GEOM:   12.0,   // morphing SDF
+  TUNNEL: 32.0,   // hyperspace corridor
+  CITY:   52.0    // neon city fly
+};
+SC.PLASMA   = 72.0;  // organic plasma seas
+SC.GREETZ   = 92.0;  // greetz + particles
+SC.FINALE   = 112.0; // explosive coda
+SC.END      = 130.0; // fade to black
+
+// ═══════════════════════════════════════════════════════════════
+//  SHADERS
+// ═══════════════════════════════════════════════════════════════
+const VS = `#version 300 es
+layout(location=0) in vec2 a;
+out vec2 v;
+void main(){ v=a*0.5+0.5; gl_Position=vec4(a,0,1); }`;
+
+// multipurpose fullscreen raymarch / effect shader
+const FS = `#version 300 es
+precision highp float;
+in vec2 v;
+out vec4 o;
+uniform vec2  R;   // resolution
+uniform float T;   // time
+uniform float SC;  // scene id (float for smooth mix)
+uniform float PR;  // progress 0..1 of current scene
+uniform float BPM; // beats
+uniform float KICK;// kick envelope 0..1
+uniform float GT;  // global intensity / energy
+
+// ── hash / noise ──────────────────────────────────────────────
+float hash(float n){ return fract(sin(n)*43758.5453); }
+float hash2(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }
+vec3  hash3(float n){
+  return fract(sin(vec3(n,n+1.,n+2.))*vec3(43758.5453,22578.1459,19642.349));
+}
+float noise(vec2 p){
+  vec2 i=floor(p), f=fract(p); f=f*f*(3.-2.*f);
+  return mix(mix(hash2(i),hash2(i+vec2(1,0)),f.x),
+             mix(hash2(i+vec2(0,1)),hash2(i+vec2(1,1)),f.x),f.y);
+}
+float fbm(vec2 p){
+  float a=0., w=0.5;
+  for(int i=0;i<5;i++){ a+=w*noise(p); p*=2.03; w*=0.5; }
+  return a;
+}
+
+// ── SDF ops ───────────────────────────────────────────────────
+float smin(float a,float b,float k){
+  float h=clamp(0.5+0.5*(b-a)/k,0.,1.);
+  return mix(b,a,h)-k*h*(1.-h);
+}
+float smax(float a,float b,float k){ return -smin(-a,-b,k); }
+mat2  rot(float a){ float c=cos(a),s=sin(a); return mat2(c,-s,s,c); }
+
+float sdSphere(vec3 p,float r){ return length(p)-r; }
+float sdBox(vec3 p,vec3 b){ vec3 q=abs(p)-b; return length(max(q,0.))+min(max(q.x,max(q.y,q.z)),0.); }
+float sdTorus(vec3 p,vec2 t){ vec2 q=vec2(length(p.xz)-t.x,p.y); return length(q)-t.y; }
+float sdOcta(vec3 p,float s){ p=abs(p); return (p.x+p.y+p.z-s)*0.57735; }
+float sdCapsule(vec3 p,vec3 a,vec3 b,float r){
+  vec3 pa=p-a,ba=b-a; float h=clamp(dot(pa,ba)/dot(ba,ba),0.,1.);
+  return length(pa-ba*h)-r;
+}
+
+// menger sponge fold
+float menger(vec3 p, float t){
+  float d=sdBox(p,vec3(1.));
+  float s=1.;
+  for(int i=0;i<4;i++){
+    vec3 a=mod(p*s,2.)-1.;
+    s*=3.;
+    vec3 r=abs(1.-3.*abs(a));
+    float da=max(r.x,r.y), db=max(r.y,r.z), dc=max(r.z,r.x);
+    float c=(min(da,min(db,dc))-1.)/s;
+    d=max(d,c);
+  }
+  return d;
+}
+
+// ── palette ───────────────────────────────────────────────────
+vec3 pal(float t, vec3 a, vec3 b, vec3 c, vec3 d){
+  return a+b*cos(6.28318*(c*t+d));
+}
+vec3 neon(float t){
+  return pal(t, vec3(.5,.4,.5), vec3(.5,.4,.5), vec3(1.,1.,1.), vec3(.0,.15,.3));
+}
+vec3 cyber(float t){
+  return pal(t, vec3(.1,.2,.4), vec3(.6,.3,.5), vec3(1.,.8,.7), vec3(.0,.2,.4));
+}
+
+// ── SCENE 0: INTRO starfield + logo pulse ─────────────────────
+vec3 sceneIntro(vec2 uv, float t){
+  vec2 p = (uv*2.-1.)*vec2(R.x/R.y,1.);
+  vec3 col=vec3(0.01,0.0,0.04);
+
+  // deep greebles / hex noise
+  float n=fbm(p*2.5+t*0.15);
+  col += cyber(n*0.6+t*0.05)*0.15*n;
+
+  // star layers
+  for(float i=0.;i<3.;i++){
+    vec2 sp = p*(1.5+i*1.8);
+    sp += vec2(sin(t*(0.1+i*0.05)+i), cos(t*(0.08+i*0.03)+i*2.))*0.2*(3.-i);
+    vec2 id = floor(sp*8.+i*13.);
+    vec2 f  = fract(sp*8.+i*13.)-0.5;
+    float h = hash2(id+i*17.);
+    float star = smoothstep(0.03*(1.+h),0.,length(f-(hash3(h+i).xy-0.5)*0.4));
+    float tw = 0.5+0.5*sin(t*3.+h*40.);
+    col += star*tw*vec3(0.7+h*0.3,0.8,1.)*(0.4+0.4*i)*GT;
+  }
+
+  // central ring pulse on kick
+  float r = length(p);
+  float ring = abs(r - 0.35 - KICK*0.08 - sin(t)*0.02);
+  ring = 0.012/max(ring,1e-4);
+  col += ring * vec3(0.9,0.3,1.2) * (0.6+KICK*1.2);
+
+  // secondary hex ring
+  float a = atan(p.y,p.x);
+  float hex = abs(r - 0.55) - 0.002*sin(a*6.+t*2.);
+  hex = 0.004/max(abs(hex),1e-4);
+  col += hex*vec3(0.2,0.6,1.)*0.5;
+
+  // radial scan beams
+  float beams = pow(abs(sin(a*3. + t*0.7)), 32.) * smoothstep(0.8,0.1,r);
+  col += beams * vec3(0.4,0.1,0.9) * 0.35 * GT;
+
+  // center glow
+  col += exp(-r*r*6.)*vec3(0.5,0.1,0.9)*(0.4+KICK*0.6);
+
+  // digital noise flash on intro
+  if(t < 4. && fract(t*8.)<0.08) col = mix(col,vec3(1.),0.15*hash(floor(t*20.)));
+
+  return col;
+}
+
+// ── SCENE 1: morphing SDF geometry ────────────────────────────
+float mapGeom(vec3 p, float t){
+  p.yz *= rot(t*0.3);
+  p.xz *= rot(t*0.2);
+  // breathing
+  float br = 1. + 0.08*sin(t*2.) + KICK*0.12;
+  p /= br;
+
+  // orbiters
+  vec3 q=p;
+  float d = sdOcta(q, 0.7);
+
+  // twist torus
+  vec3 pt=p;
+  pt.xz *= rot(pt.y*2. + t);
+  d = smin(d, sdTorus(pt, vec2(1.1,0.18)), 0.35);
+
+  // floating spheres
+  for(int i=0;i<5;i++){
+    float fi=float(i);
+    vec3 c = hash3(fi+1.)*2.-1.;
+    c = normalize(c)* (1.2 + 0.3*sin(t+fi));
+    c.xz *= rot(t*(0.4+fi*0.1));
+    d = smin(d, sdSphere(p-c, 0.18+0.05*sin(t*2.+fi)), 0.25);
+  }
+
+  // menger subtraction pulse
+  float meng = menger(p*0.9, t);
+  d = mix(d, smax(d, -meng*0.7, 0.15), smoothstep(0.,1.,sin(t*0.4)*0.5+0.5)*0.7);
+
+  return d * br;
+}
+
+vec3 sceneGeom(vec2 uv, float t){
+  vec2 p = (uv*2.-1.)*vec2(R.x/R.y,1.);
+  vec3 ro = vec3(0.,0.,-3.2);
+  vec3 rd = normalize(vec3(p,1.6));
+
+  float d=0., hit=0.;
+  vec3 pos;
+  for(int i=0;i<80;i++){
+    pos = ro+rd*d;
+    float m = mapGeom(pos,t);
+    if(m<0.001){ hit=1.; break; }
+    d += m;
+    if(d>12.) break;
+  }
+
+  vec3 col = vec3(0.005,0.0,0.02);
+  // bg nebula
+  col += cyber(fbm(p*1.5+t*0.05)*0.7) * 0.12;
+
+  if(hit>0.5){
+    // normal
+    vec2 e=vec2(0.001,0.);
+    vec3 n=normalize(vec3(
+      mapGeom(pos+e.xyy,t)-mapGeom(pos-e.xyy,t),
+      mapGeom(pos+e.yxy,t)-mapGeom(pos-e.yxy,t),
+      mapGeom(pos+e.yyx,t)-mapGeom(pos-e.yyx,t)
+    ));
+    // lighting
+    vec3 lp=vec3(2.*sin(t),2.,-1.);
+    vec3 ld=normalize(lp-pos);
+    float dif=clamp(dot(n,ld),0.,1.);
+    float fre=pow(1.-clamp(dot(n,-rd),0.,1.), 3.);
+    float spec=pow(clamp(dot(reflect(-ld,n),-rd),0.,1.), 32.);
+    float ao=1.; // approx
+
+    vec3 base = cyber(n.y*0.5+n.x*0.3 + t*0.1);
+    col = base*(0.15+0.7*dif) + fre*vec3(0.6,0.3,1.)*0.8 + spec*vec3(1.,0.8,1.);
+    // rim
+    col += fre*vec3(0.3,0.8,1.)*0.5;
+    // cable-like edge highlight from iterative
+    col += exp(-abs(mapGeom(pos+n*0.05,t))*20.)*vec3(1.,0.4,0.9)*0.4;
+  }
+
+  // glow from missed rays near surface (cheap AO bloom of geometry)
+  float glow=0.;
+  d=0.;
+  for(int i=0;i<40;i++){
+    float m=mapGeom(ro+rd*d,t);
+    glow += exp(-m*8.)*0.02;
+    d += max(m,0.05);
+    if(d>10.) break;
+  }
+  col += glow*vec3(0.5,0.2,1.)*(0.4+KICK*0.5);
+
+  // title flash mid
+  return col;
+}
+
+// ── SCENE 2: HYPER TUNNEL ─────────────────────────────────────
+vec3 sceneTunnel(vec2 uv, float t){
+  vec2 p = (uv*2.-1.)*vec2(R.x/R.y,1.);
+  float spd = t*1.8 + GT*0.5;
+
+  // inverse cylindrical
+  float r = length(p);
+  float a = atan(p.y,p.x);
+  float z = 1./(r+0.12) + spd;
+
+  // wall pattern
+  float u = a/6.28318 + z*0.08;
+  float vv = z*0.15;
+
+  float grid = abs(fract(u*12.)-0.5);
+  float grid2= abs(fract(vv*4.)-0.5);
+  float lines = smoothstep(0.08,0.0,grid) + smoothstep(0.06,0.0,grid2)*0.6;
+
+  // rib rings
+  float rings = pow(abs(sin(z*2.5 - t*3.)), 12.);
+
+  // plasma seams
+  float pl = fbm(vec2(a*2., z*0.3 - t));
+  pl = smoothstep(0.35,0.75,pl);
+
+  vec3 col = vec3(0.01,0.0,0.03);
+  col += lines * neon(z*0.05 + a*0.1) * 0.6;
+  col += rings * vec3(0.3,0.7,1.5) * (0.3+KICK*0.8);
+  col += pl * cyber(z*0.1) * 0.55;
+
+  // center beam
+  col += exp(-r*r*8.)*vec3(0.6,0.2,1.)*(0.5+0.5*sin(t*4.));
+  // motion streaks
+  col += exp(-r*3.)*vec3(0.2,0.05,0.4)*KICK;
+
+  // chromatic tunnel warp
+  col *= 0.7 + 0.3/(r+0.3);
+  return col * (0.85+0.15*GT);
+}
+
+// ── SCENE 3: NEON CITY ────────────────────────────────────────
+float building(vec3 p){
+  // repeating city blocks
+  vec3 q = p;
+  vec2 id = floor(q.xz / 2.4);
+  q.xz = mod(q.xz, 2.4) - 1.2;
+  float h = 1.5 + 4.5*hash2(id);
+  // taper
+  float d = sdBox(q-vec3(0.,h*0.5,0.), vec3(0.55, h*0.5, 0.55));
+  // rooftops
+  d = min(d, sdBox(q-vec3(0.,h,0.), vec3(0.35,0.08,0.35)));
+  // antenna
+  if(hash2(id+7.)>0.6)
+    d = min(d, sdCapsule(q, vec3(0.,h,0.), vec3(0.,h+0.8+hash2(id),0.), 0.03));
+  return d;
+}
+
+float mapCity(vec3 p, float t){
+  float d = building(p);
+  // ground
+  d = min(d, p.y + 0.02);
+  // flying orbs
+  for(int i=0;i<4;i++){
+    float fi=float(i);
+    vec3 c = vec3(
+      sin(t*0.4+fi*1.7)*8.,
+      2.+1.5*sin(t*0.6+fi),
+      mod(t*3.+fi*7., 30.)-15.
+    );
+    d = min(d, sdSphere(p-c, 0.15));
+  }
+  return d;
+}
+
+vec3 sceneCity(vec2 uv, float t){
+  vec2 p = (uv*2.-1.)*vec2(R.x/R.y,1.);
+  // fly through
+  float zf = t*2.5;
+  vec3 ro = vec3(sin(t*0.2)*1.5, 3.2 + sin(t*0.3)*0.4, zf);
+  vec3 ta = ro + vec3(sin(t*0.15)*0.5, -0.3, 2.);
+  vec3 ww = normalize(ta-ro);
+  vec3 uu = normalize(cross(ww,vec3(0,1,0)));
+  vec3 vv = cross(uu,ww);
+  vec3 rd = normalize(p.x*uu + p.y*vv + 1.4*ww);
+
+  float d=0.; float hit=0.; vec3 pos;
+  for(int i=0;i<90;i++){
+    pos = ro+rd*d;
+    float m = mapCity(pos,t);
+    if(m<0.002){ hit=1.; break; }
+    d += m*0.85;
+    if(d>40.) break;
+  }
+
+  // sky gradient
+  vec3 col = mix(vec3(0.02,0.0,0.08), vec3(0.4,0.15,0.5), pow(max(rd.y,0.),0.6));
+  // stars
+  float stars = pow(hash2(floor(rd.xy*200.)), 40.)*smoothstep(0.,0.3,rd.y);
+  col += stars*vec3(0.8,0.9,1.);
+  // moon
+  vec3 moonDir = normalize(vec3(0.4,0.35,0.5));
+  float moon = smoothstep(0.03,0.0,length(rd-moonDir)-0.04);
+  col += moon*vec3(0.9,0.85,1.)*1.2;
+
+  if(hit>0.5){
+    vec2 e=vec2(0.001,0.);
+    vec3 n=normalize(vec3(
+      mapCity(pos+e.xyy,t)-mapCity(pos-e.xyy,t),
+      mapCity(pos+e.yxy,t)-mapCity(pos-e.yxy,t),
+      mapCity(pos+e.yyx,t)-mapCity(pos-e.yyx,t)
+    ));
+    // building color: windows grid
+    float win=0.;
+    if(n.y < 0.5){
+      vec2 wu = (abs(n.x)>0.5) ? pos.zy : pos.xy;
+      // if side
+      if(abs(n.z)>0.5) wu = pos.xy;
+      if(abs(n.x)>0.5) wu = pos.zy;
+      vec2 wgrid = fract(wu*3.);
+      win = step(0.3,wgrid.x)*step(0.25,wgrid.y)*step(hash2(floor(wu*3.)+floor(pos.y*3.)), 0.55+0.2*sin(t+pos.x));
+    }
+    float fre=pow(1.-clamp(dot(n,-rd),0.,1.),2.5);
+    float fog = 1.-exp(-d*d*0.004);
+
+    vec3 base = vec3(0.05,0.04,0.1);
+    base += win * vec3(1.,0.7,0.3) * (0.5+0.5*sin(pos.y*4.+t*3.+hash(pos.x)*10.));
+    // neon edge
+    base += fre*vec3(0.3,0.6,1.4);
+    // street glow from below
+    base += vec3(0.4,0.1,0.8)*exp(-pos.y*0.4)*0.4;
+
+    col = mix(base, col, fog);
+    // fog color cyber
+    col = mix(col, cyber(0.3+pos.y*0.05)*0.3, fog*0.6);
+  }
+
+  // atmospheric haze glow center
+  col += vec3(0.15,0.05,0.3)*exp(-length(p)*1.5)*0.5*(0.6+KICK*0.5);
+  return col;
+}
+
+// ── SCENE 4: PLASMA / METABALL SEA ────────────────────────────
+float mapPlasma(vec3 p, float t){
+  float d = 100.;
+  for(int i=0;i<7;i++){
+    float fi=float(i);
+    vec3 c = vec3(
+      sin(t*0.7+fi*1.3)*1.8,
+      cos(t*0.5+fi*0.9)*0.9 + sin(t+fi)*0.3,
+      cos(t*0.6+fi*1.7)*1.8
+    );
+    float r = 0.45 + 0.2*sin(t*1.5+fi*2.);
+    d = smin(d, sdSphere(p-c, r), 0.55);
+  }
+  // floor field
+  float fl = p.y + 1.2 + 0.15*sin(p.x*2.+t)*sin(p.z*2.+t*0.7);
+  d = smin(d, fl, 0.4);
+  return d;
+}
+
+vec3 scenePlasma(vec2 uv, float t){
+  vec2 p = (uv*2.-1.)*vec2(R.x/R.y,1.);
+  vec3 ro = vec3(sin(t*0.2)*0.5, 0.8, -3.5);
+  vec3 rd = normalize(vec3(p, 1.5));
+  rd.xz *= rot(sin(t*0.15)*0.2);
+
+  float d=0.; float hit=0.; vec3 pos;
+  for(int i=0;i<70;i++){
+    pos = ro+rd*d;
+    float m = mapPlasma(pos,t);
+    if(m<0.001){ hit=1.; break; }
+    d += m;
+    if(d>14.) break;
+  }
+
+  vec3 col = vec3(0.02,0.0,0.04);
+  // volumetric density accumulation
+  float dens=0.;
+  float zd=0.;
+  for(int i=0;i<48;i++){
+    vec3 q = ro+rd*zd;
+    float m = mapPlasma(q,t);
+    dens += exp(-max(m,0.)*6.)*0.04;
+    zd += 0.18;
+    if(zd>12.) break;
+  }
+  col += dens * neon(t*0.08 + dens) * 1.3;
+
+  if(hit>0.5){
+    vec2 e=vec2(0.002,0.);
+    vec3 n=normalize(vec3(
+      mapPlasma(pos+e.xyy,t)-mapPlasma(pos-e.xyy,t),
+      mapPlasma(pos+e.yxy,t)-mapPlasma(pos-e.yxy,t),
+      mapPlasma(pos+e.yyx,t)-mapPlasma(pos-e.yyx,t)
+    ));
+    float fre=pow(1.-clamp(dot(n,-rd),0.,1.), 3.);
+    float dif=clamp(dot(n,normalize(vec3(1,1,-1))),0.,1.);
+    vec3 base = neon(pos.x*0.3+pos.y*0.2+t*0.1);
+    // iridescent
+    base = mix(base, cyber(n.x+n.y+t*0.05), 0.5);
+    col = base*(0.2+0.6*dif) + fre*vec3(1.,0.5,1.2) + dens*0.3;
+    // specular blob
+    col += pow(dif,16.)*vec3(1.)*0.6;
+  }
+
+  // plasma 2d wash in bg
+  float pl2 = fbm(p*3. + vec2(t*0.3, -t*0.2));
+  col += cyber(pl2)*pl2*0.12;
+  col += KICK*exp(-length(p)*2.)*vec3(0.8,0.3,1.)*0.5;
+  return col;
+}
+
+// ── SCENE 5: GREETZ particle space ────────────────────────────
+vec3 sceneGreetz(vec2 uv, float t){
+  vec2 p = (uv*2.-1.)*vec2(R.x/R.y,1.);
+  vec3 col = vec3(0.01,0.0,0.03);
+
+  // swirl field
+  float ang = t*0.15;
+  mat2 rm = rot(ang);
+  vec2 q = rm*p;
+
+  // particle storm
+  for(float i=0.;i<60.;i++){
+    float fi=i;
+    vec3 h = hash3(fi*3.1);
+    // spiral arm positions
+    float arm = floor(h.x*3.);
+    float th = h.y*6.28318 + t*(0.3+h.z*0.5) + arm*2.094;
+    float rad = 0.2 + h.z*1.8;
+    rad += 0.15*sin(th*3.+t);
+    vec2 pp = vec2(cos(th),sin(th))*rad;
+    pp.y *= 0.55; // ellipse
+    // depth scroll
+    float z = fract(h.x + t*0.12);
+    pp /= (0.3+z*1.5);
+    float sz = 0.012*(1.-z) * (1.+KICK*0.5);
+    float d = length(q-pp);
+    float g = exp(-d*d/(sz*sz));
+    vec3 pc = neon(h.y + t*0.1);
+    col += g * pc * (0.6+0.4*h.z) * (0.5+z);
+  }
+
+  // large soft orbs
+  for(float i=0.;i<8.;i++){
+    float fi=i;
+    vec2 c = (hash3(fi+20.).xy*2.-1.)*1.5;
+    c = rot(t*(0.1+fi*0.02))*c;
+    float d = length(p-c);
+    col += exp(-d*d*3.)*cyber(fi*0.1+t*0.05)*0.25*(0.7+KICK*0.4);
+  }
+
+  // rings
+  float r=length(p);
+  col += 0.01/max(abs(r-0.6-0.1*sin(t)),0.005) * vec3(0.4,0.2,1.)*0.3;
+  col += 0.008/max(abs(r-0.95),0.005)*vec3(0.2,0.6,1.)*0.2;
+
+  // center nucleus
+  col += exp(-r*r*4.)*vec3(0.7,0.2,1.)*(0.5+KICK);
+
+  return col;
+}
+
+// ── SCENE 6: FINALE ───────────────────────────────────────────
+float mapFinale(vec3 p, float t){
+  float ph = t*0.5;
+  p.yz *= rot(ph*0.3);
+  p.xz *= rot(ph*0.5);
+  // exploding icosa that unfolds
+  float d = sdOcta(p, 1.0 + KICK*0.15);
+  // shell
+  float shell = abs(sdSphere(p, 1.4+0.1*sin(t*2.))) - 0.02;
+  d = min(d, shell);
+  // solar corona spike via domain rep polar
+  float a = atan(p.z,p.x);
+  float r = length(p.xz);
+  vec3 q = vec3(r, p.y, a);
+  float spikes = sdCapsule(vec3(r,p.y,0.), vec3(1.2,0.,0.), vec3(1.8+0.4*sin(a*5.+t*3.),0.2*sin(a*3.),0.), 0.04);
+  // only some angles
+  spikes = spikes + 0.15*(0.5+0.5*sin(a*8.));
+  d = smin(d, spikes*(0.5+0.5*GT), 0.2);
+  return d*0.7;
+}
+
+vec3 sceneFinale(vec2 uv, float t, float pr){
+  vec2 p = (uv*2.-1.)*vec2(R.x/R.y,1.);
+  float camZ = -4. + sin(t*0.4)*0.3 - pr*0.5;
+  vec3 ro = vec3(0.,0.,camZ);
+  vec3 rd = normalize(vec3(p, 1.6));
+
+  float d=0.; float hit=0.; vec3 pos;
+  for(int i=0;i<70;i++){
+    pos = ro+rd*d;
+    float m = mapFinale(pos,t);
+    if(m<0.001){ hit=1.; break; }
+    d += m;
+    if(d>12.) break;
+  }
+
+  // electric sky
+  vec3 col = vec3(0.02,0.0,0.05);
+  float nb = fbm(p*2.+t*0.2);
+  col += cyber(nb)*nb*0.35;
+  // radial burst
+  float r=length(p);
+  float burst = pow(max(0.,1.-r), 2.) * (0.4+pr*0.8);
+  col += burst * neon(t*0.1) * (0.5+KICK);
+
+  if(hit>0.5){
+    vec2 e=vec2(0.001,0.);
+    vec3 n=normalize(vec3(
+      mapFinale(pos+e.xyy,t)-mapFinale(pos-e.xyy,t),
+      mapFinale(pos+e.yxy,t)-mapFinale(pos-e.yxy,t),
+      mapFinale(pos+e.yyx,t)-mapFinale(pos-e.yyx,t)
+    ));
+    float fre=pow(1.-clamp(dot(n,-rd),0.,1.),2.);
+    float dif=clamp(dot(n,normalize(vec3(0.5,1.,-0.5))),0.,1.);
+    vec3 base = mix(vec3(0.9,0.3,1.), vec3(0.2,0.7,1.), n.y*0.5+0.5);
+    base = mix(base, neon(t*0.15), 0.4);
+    col = base*(0.2+dif*0.7) + fre*vec3(1.,0.6,1.2)*1.2;
+    col += pow(dif,20.)*2.;
+  }
+
+  // volumetric corona
+  float glow=0.;
+  d=0.;
+  for(int i=0;i<36;i++){
+    float m=mapFinale(ro+rd*d,t);
+    glow += exp(-abs(m)*5.)*0.03;
+    d+=0.22;
+    if(d>10.)break;
+  }
+  col += glow*vec3(0.8,0.3,1.2)*(0.8+KICK);
+
+  // expanding shockwave
+  float sw = abs(r - pr*1.8);
+  col += 0.02/max(sw,0.005) * vec3(0.6,0.4,1.) * (1.-pr) * 0.8;
+
+  // particle shatter
+  for(float i=0.;i<30.;i++){
+    vec3 h=hash3(i);
+    float life = fract(h.x + pr);
+    vec2 pp = (h.yz*2.-1.) * (0.3+life*2.5);
+    float sz = 0.02*(1.-life);
+    col += exp(-length(p-pp)*length(p-pp)/(sz*sz+1e-5)) * neon(h.x) * (1.-life);
+  }
+
+  return col;
+}
+
+// ── post + text helpers ───────────────────────────────────────
+// tiny 5x7 digit/letter via procedural (subset for "NEXUS NULL" etc.)
+// We'll render greets in CPU overlay; shader just does greekish logos via shapes
+
+float sdSegment(vec2 p, vec2 a, vec2 b){
+  vec2 pa=p-a, ba=b-a;
+  float h=clamp(dot(pa,ba)/dot(ba,ba),0.,1.);
+  return length(pa-ba*h);
+}
+float logoNEXUS(vec2 p){
+  // very rough stylized "N·N" glyph cluster
+  p.x *= 1.1;
+  float d=1e5;
+  // left N
+  d=min(d, sdSegment(p, vec2(-0.7,-0.25), vec2(-0.7,0.25)));
+  d=min(d, sdSegment(p, vec2(-0.7,0.25), vec2(-0.4,-0.25)));
+  d=min(d, sdSegment(p, vec2(-0.4,-0.25), vec2(-0.4,0.25)));
+  // center diamond
+  d=min(d, sdSegment(p, vec2(-0.15,0.), vec2(0.,0.18)));
+  d=min(d, sdSegment(p, vec2(0.,0.18), vec2(0.15,0.)));
+  d=min(d, sdSegment(p, vec2(0.15,0.), vec2(0.,-0.18)));
+  d=min(d, sdSegment(p, vec2(0.,-0.18), vec2(-0.15,0.)));
+  // right N
+  d=min(d, sdSegment(p, vec2(0.4,-0.25), vec2(0.4,0.25)));
+  d=min(d, sdSegment(p, vec2(0.4,0.25), vec2(0.7,-0.25)));
+  d=min(d, sdSegment(p, vec2(0.7,-0.25), vec2(0.7,0.25)));
+  return d;
+}
+
+// ── main ──────────────────────────────────────────────────────
+void main(){
+  vec2 uv = v;
+  // slight barrel for CRT
+  vec2 pc = uv*2.-1.;
+  pc *= 1. + 0.04*dot(pc,pc);
+  uv = pc*0.5+0.5;
+
+  float t = T;
+  float scene = SC;
+  float pr = PR;
+
+  // jitter uv on kick slightly (impact)
+  uv += (hash3(floor(t*60.)).xy-0.5) * KICK * 0.004;
+
+  vec3 col = vec3(0.);
+
+  // blend nearby scenes using float SC smoothly
+  // SC is set as integer-ish but we mix neighbors when PR near edges
+  if(scene < 0.5){
+    col = sceneIntro(uv, t);
+    // logo
+    vec2 lp = (uv*2.-1.)*vec2(R.x/R.y,1.);
+    lp.y += 0.02;
+    float ld = logoNEXUS(lp*1.4);
+    float logo = smoothstep(0.02,0.0,ld);
+    float glow = exp(-ld*ld*800.)*0.5;
+    float appear = smoothstep(1.5,4.,t) * (1.-smoothstep(9.,11.5,t));
+    col += (logo*vec3(1.,0.85,1.) + glow*vec3(0.7,0.3,1.)) * appear * (0.8+KICK*0.4);
+    // subtitle line
+    float sub = smoothstep(0.004,0., abs(lp.y+0.38)-0.002) * smoothstep(0.55,0.2,abs(lp.x));
+    col += sub * vec3(0.4,0.7,1.) * appear * 0.6;
+  } else if(scene < 1.5){
+    col = sceneGeom(uv, t);
+  } else if(scene < 2.5){
+    col = sceneTunnel(uv, t);
+  } else if(scene < 3.5){
+    col = sceneCity(uv, t);
+  } else if(scene < 4.5){
+    col = scenePlasma(uv, t);
+  } else if(scene < 5.5){
+    col = sceneGreetz(uv, t);
+  } else {
+    col = sceneFinale(uv, t, pr);
+  }
+
+  // ── post processing stack ──
+  // vignette
+  float vig = 1. - 0.45*dot(pc,pc);
+  col *= vig;
+
+  // film grain
+  float grain = (hash2(uv*R + fract(t)*100.)-0.5)*0.06;
+  col += grain;
+
+  // scanlines
+  float scan = 0.92 + 0.08*sin(uv.y * R.y * 3.14159);
+  col *= scan;
+
+  // chromatic aberration on edges / kick
+  // (already roughly in tunnel; global mild)
+  float ca = 0.0015 + KICK*0.003;
+  // approximate by deshift hue
+  col.r *= 1. + ca*30.*length(pc);
+  col.b *= 1. - ca*20.*length(pc);
+
+  // tonemap / gamma
+  col = col / (1. + col*0.35);          // reinhard-ish
+  col = pow(max(col,0.), vec3(0.90));  // mild gamma
+
+  // overall fade in/out
+  float fadeIn  = smoothstep(0., 1.5, t);
+  float fadeOut = 1. - smoothstep(126., 130., t);
+  col *= fadeIn * fadeOut;
+
+  // energy flash white on big kicks near scene starts
+  col += vec3(KICK * KICK * 0.08);
+
+  o = vec4(col, 1.);
+}
+`;
+
+// ═══════════════════════════════════════════════════════════════
+//  WEBGL BOOT
+// ═══════════════════════════════════════════════════════════════
+const canvas = document.getElementById("c");
+const gl = canvas.getContext("webgl2", { antialias:false, alpha:false })
+       || canvas.getContext("webgl2");
+if(!gl){
+  document.getElementById("ui").innerHTML = "<h1>WEBGL2 REQUIRED</h1><p>try a recent Chrome / Firefox / Edge</p>";
+  throw new Error("WebGL2 unavailable");
+}
+
+function compile(type, src){
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)){
+    console.error(gl.getShaderInfoLog(s));
+    console.error(src.split("\n").map((l,i)=>((i+1)+"").padStart(4)+" "+l).join("\n"));
+    throw new Error("shader compile");
+  }
+  return s;
+}
+function program(vs, fs){
+  const p = gl.createProgram();
+  gl.attachShader(p, compile(gl.VERTEX_SHADER, vs));
+  gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(p);
+  if(!gl.getProgramParameter(p, gl.LINK_STATUS)){
+    console.error(gl.getProgramInfoLog(p));
+    throw new Error("link");
+  }
+  return p;
+}
+
+const prog = program(VS, FS);
+gl.useProgram(prog);
+
+// fullscreen tri
+const buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+const U = {};
+for(const n of ["R","T","SC","PR","BPM","KICK","GT"]){
+  U[n] = gl.getUniformLocation(prog, n);
+}
+
+function resize(){
+  const dpr = Math.min(devicePixelRatio||1, 2);
+  const w = Math.floor(innerWidth * dpr);
+  const h = Math.floor(innerHeight * dpr);
+  if(canvas.width!==w || canvas.height!==h){
+    canvas.width=w; canvas.height=h;
+    gl.viewport(0,0,w,h);
+  }
+}
+addEventListener("resize", resize);
+resize();
+
+// ═══════════════════════════════════════════════════════════════
+//  PROCEDURAL TRACKER MUSIC
+// ═══════════════════════════════════════════════════════════════
+/*
+  Style: dark synthwave / ambient demoscene
+  128 BPM, 4/4
+  Channels: kick, snare, hat, bass, arp, lead, pad, fx
+  Pattern length 16 steps (1 bar of 16ths? use 16th notes, 16 steps = 1 bar)
+*/
+let audioCtx=null, masterGain=null, analyser=null;
+let musicStart=0; // audioCtx time when demo starts
+let kickEnv=0;
+
+// scale: A minor / dark
+// A2=110, C3, D3, E3, G3, A3, C4, D4, E4, G4, A4
+const NOTE = {
+  A1:55, C2:65.41, D2:73.42, E2:82.41, G2:98, A2:110,
+  C3:130.81, D3:146.83, E3:164.81, G3:196, A3:220,
+  C4:261.63, D4:293.66, E4:329.63, G4:392, A4:440,
+  B3:246.94, F3:174.61, F4:349.23, B4:493.88,
+  GS3:207.65, DS4:311.13, GS4:415.3
+};
+
+// song pattern bank — each pattern: 16 steps of 16th notes
+// instruments receive note# or 0 = rest, velocity implied
+const PK = [ // kick
+  1,0,0,0, 1,0,0,0, 1,0,0,0, 1,0,0,1,
+  1,0,0,0, 1,0,0,0, 1,0,1,0, 1,0,0,1,
+];
+const PS = [ // snare
+  0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,0,
+  0,0,0,0, 1,0,0,1, 0,0,0,0, 1,0,1,0,
+];
+const PH = [ // hat closed=1 open=2
+  1,0,1,0, 1,0,1,1, 1,0,1,0, 1,0,2,0,
+  1,1,1,0, 1,0,1,1, 1,0,1,1, 1,0,2,1,
+];
+// bass patterns (note names or 0)
+const PB1 = ["A1",0,0,"A1", 0,0,"A1",0, "C2",0,0,"D2", 0,"E2",0,0];
+const PB2 = ["A1",0,"A1",0, "G2",0,0,"E2", "A1",0,0,"C2", 0,"D2","E2",0];
+const PB3 = ["A1",0,0,0, "A1",0,"C2",0, "D2",0,0,"E2", "G2",0,"A2",0];
+const PB4 = ["E2",0,0,"E2", 0,0,"D2",0, "C2",0,"A1",0, "G2",0,"A1",0];
+
+// arp
+const PA1 = ["A3","C4","E4","A4", "A3","C4","E4","G4", "A3","C4","E4","A4", "G3","B3","D4","G4"];
+const PA2 = ["A3","E4","A4","C4", "A3","E4","G4","C4", "A3","E4","A4","D4", "G3","D4","G4","B3"];
+const PA3 = ["E4","A4","C4","E4", "D4","G4","B3","D4", "C4","E4","A3","C4", "B3","E4","G3","B3"];
+
+// lead melodic phrases (longer notes using hold)
+const PL1 = ["A3",0,0,"C4", 0,0,"E4",0, "D4",0,"C4",0, "A3",0,0,0];
+const PL2 = ["E4",0,0,0, "D4",0,"C4",0, "A3",0,0,"G3", 0,"A3",0,0];
+const PL3 = ["A4",0,"G4",0, "E4",0,0,"D4", "C4",0,"A3",0, "E4",0,"A4",0];
+const PL4 = ["E4",0,0,"D4", "C4",0,"A3",0, "G3",0,"A3",0, "C4","D4","E4",0];
+
+// song arrangement: bar index -> which patterns
+// demo runtime ~ 130s, 128bpm → bar = 1.875s → ~69 bars
+function arrangement(bar){
+  // sections match scenes roughly
+  const sec = Math.floor(bar / 8); // 8-bar phrases
+  // energy ramp
+  const energy = Math.min(1, bar/16) * (bar < 64 ? 1 : Math.max(0, 1-(bar-64)/8));
+
+  let kick=PK, snare=PS, hat=PH, bass=PB1, arp=PA1, lead=PL1, pad=true;
+
+  if(bar < 8){ // intro — sparse
+    kick = bar<4 ? new Array(16).fill(0) : PK;
+    snare = bar<6 ? new Array(16).fill(0) : PS;
+    hat = bar<2 ? new Array(16).fill(0) : PH.map((v,i)=> i%4===0?v:0);
+    bass = PB1;
+    arp = null;
+    lead = null;
+    pad = true;
+  } else if(bar < 24){ // geom
+    bass = bar%4<2 ? PB1 : PB2;
+    arp  = PA1;
+    lead = bar%8<4 ? null : PL1;
+  } else if(bar < 40){ // tunnel high energy
+    bass = bar%2 ? PB2 : PB3;
+    arp  = PA2;
+    lead = bar%8<4 ? PL2 : PL3;
+    kick = PK;
+  } else if(bar < 56){ // city
+    bass = PB3;
+    arp  = PA1;
+    lead = PL2;
+  } else if(bar < 72){ // plasma
+    bass = PB4;
+    arp  = PA3;
+    lead = PL3;
+  } else if(bar < 88){ // greetz
+    bass = PB1;
+    arp  = PA2;
+    lead = PL4;
+  } else { // finale
+    bass = PB2;
+    arp  = PA3;
+    lead = PL3;
+    // build intensity
+    if(bar > 64) kick = PK; // already
+  }
+
+  // late fade silence
+  if(bar >= 68){
+    if(bar >= 70){ kick=new Array(16).fill(0); snare=new Array(16).fill(0); hat=new Array(16).fill(0); bass=null; arp=null; lead=null; pad=false; }
+  }
+  return { kick, snare, hat, bass, arp, lead, pad, energy };
+}
+
+function envGain(t, a, d, s, r, hold){
+  // returns gain value schedule helper
+  // not used directly — we schedule with setValueAtTime
+}
+
+function playKick(t){
+  const o = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  const f = audioCtx.createBiquadFilter();
+  o.type="sine";
+  o.frequency.setValueAtTime(150, t);
+  o.frequency.exponentialRampToValueAtTime(40, t+0.08);
+  f.type="lowpass"; f.frequency.value=200;
+  g.gain.setValueAtTime(1.0, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t+0.35);
+  o.connect(f); f.connect(g); g.connect(masterGain);
+  o.start(t); o.stop(t+0.4);
+  // click
+  const c = audioCtx.createOscillator();
+  const cg= audioCtx.createGain();
+  c.type="square"; c.frequency.value=80;
+  cg.gain.setValueAtTime(0.3,t);
+  cg.gain.exponentialRampToValueAtTime(0.001,t+0.02);
+  c.connect(cg); cg.connect(masterGain);
+  c.start(t); c.stop(t+0.03);
+  kickEnv = 1;
+}
+
+function playSnare(t){
+  // noise burst
+  const len = audioCtx.sampleRate*0.2;
+  const buf = audioCtx.createBuffer(1, len|0, audioCtx.sampleRate);
+  const d = buf.getChannelData(0);
+  for(let i=0;i<d.length;i++) d[i] = Math.random()*2-1;
+  const src = audioCtx.createBufferSource(); src.buffer=buf;
+  const bp = audioCtx.createBiquadFilter(); bp.type="bandpass"; bp.frequency.value=1800; bp.Q.value=0.7;
+  const hp = audioCtx.createBiquadFilter(); hp.type="highpass"; hp.frequency.value=800;
+  const g = audioCtx.createGain();
+  g.gain.setValueAtTime(0.55,t);
+  g.gain.exponentialRampToValueAtTime(0.001,t+0.18);
+  src.connect(bp); bp.connect(hp); hp.connect(g); g.connect(masterGain);
+  src.start(t); src.stop(t+0.2);
+  // body tone
+  const o=audioCtx.createOscillator(); const og=audioCtx.createGain();
+  o.type="triangle"; o.frequency.setValueAtTime(200,t); o.frequency.exponentialRampToValueAtTime(120,t+0.08);
+  og.gain.setValueAtTime(0.3,t); og.gain.exponentialRampToValueAtTime(0.001,t+0.1);
+  o.connect(og); og.connect(masterGain); o.start(t); o.stop(t+0.12);
+}
+
+function playHat(t, open){
+  const len = audioCtx.sampleRate*(open?0.25:0.05);
+  const buf = audioCtx.createBuffer(1, len|0, audioCtx.sampleRate);
+  const data = buf.getChannelData(0);
+  for(let i=0;i<data.length;i++) data[i]=Math.random()*2-1;
+  const src=audioCtx.createBufferSource(); src.buffer=buf;
+  const hp=audioCtx.createBiquadFilter(); hp.type="highpass"; hp.frequency.value=7000;
+  const g=audioCtx.createGain();
+  g.gain.setValueAtTime(open?0.18:0.12, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t+(open?0.22:0.04));
+  src.connect(hp); hp.connect(g); g.connect(masterGain);
+  src.start(t); src.stop(t+(open?0.25:0.05));
+}
+
+function playBass(t, freq, dur){
+  const o=audioCtx.createOscillator();
+  const o2=audioCtx.createOscillator();
+  const g=audioCtx.createGain();
+  const f=audioCtx.createBiquadFilter();
+  o.type="sawtooth"; o2.type="square";
+  o.frequency.value=freq; o2.frequency.value=freq*0.5;
+  f.type="lowpass";
+  f.frequency.setValueAtTime(400+400*(kickEnv), t);
+  f.frequency.exponentialRampToValueAtTime(120, t+0.15);
+  f.Q.value=4;
+  g.gain.setValueAtTime(0.0001,t);
+  g.gain.exponentialRampToValueAtTime(0.35, t+0.02);
+  g.gain.exponentialRampToValueAtTime(0.001, t+dur);
+  o.connect(f); o2.connect(f); f.connect(g); g.connect(masterGain);
+  o.start(t); o2.start(t); o.stop(t+dur+0.02); o2.stop(t+dur+0.02);
+}
+
+function playArp(t, freq, dur){
+  const o=audioCtx.createOscillator();
+  const g=audioCtx.createGain();
+  const f=audioCtx.createBiquadFilter();
+  o.type="square";
+  o.frequency.value=freq;
+  f.type="lowpass"; f.frequency.setValueAtTime(2200,t); f.frequency.exponentialRampToValueAtTime(400,t+dur);
+  g.gain.setValueAtTime(0.0001,t);
+  g.gain.exponentialRampToValueAtTime(0.1, t+0.01);
+  g.gain.exponentialRampToValueAtTime(0.001, t+dur);
+  o.connect(f); f.connect(g); g.connect(masterGain);
+  o.start(t); o.stop(t+dur+0.02);
+}
+
+function playLead(t, freq, dur){
+  const o=audioCtx.createOscillator();
+  const o2=audioCtx.createOscillator();
+  const g=audioCtx.createGain();
+  const f=audioCtx.createBiquadFilter();
+  o.type="sawtooth"; o2.type="sawtooth";
+  o.frequency.value=freq; o2.frequency.value=freq*1.005; // detune
+  f.type="lowpass";
+  f.frequency.setValueAtTime(1500,t);
+  f.frequency.linearRampToValueAtTime(800, t+dur);
+  f.Q.value=2;
+  // vibrato via lfo
+  const lfo=audioCtx.createOscillator();
+  const lfoG=audioCtx.createGain();
+  lfo.frequency.value=5; lfoG.gain.value=8;
+  lfo.connect(lfoG); lfoG.connect(o.frequency);
+  g.gain.setValueAtTime(0.0001,t);
+  g.gain.linearRampToValueAtTime(0.12, t+0.05);
+  g.gain.setValueAtTime(0.12, t+dur*0.7);
+  g.gain.exponentialRampToValueAtTime(0.001, t+dur);
+  o.connect(f); o2.connect(f); f.connect(g); g.connect(masterGain);
+  o.start(t); o2.start(t); lfo.start(t);
+  o.stop(t+dur+0.05); o2.stop(t+dur+0.05); lfo.stop(t+dur+0.05);
+}
+
+// sustained pad voice — we re-trigger softly each bar
+let padNodes=null;
+function ensurePad(on){
+  if(on && !padNodes){
+    const freqs=[NOTE.A2, NOTE.C3, NOTE.E3, NOTE.A3];
+    padNodes=[];
+    const g=audioCtx.createGain();
+    g.gain.value=0.0001;
+    g.connect(masterGain);
+    const f=audioCtx.createBiquadFilter();
+    f.type="lowpass"; f.frequency.value=600; f.Q.value=0.5;
+    f.connect(g);
+    for(const fq of freqs){
+      const o=audioCtx.createOscillator();
+      o.type="sawtooth"; o.frequency.value=fq;
+      // slight detune
+      const o2=audioCtx.createOscillator();
+      o2.type="triangle"; o2.frequency.value=fq*1.003;
+      o.connect(f); o2.connect(f);
+      o.start(); o2.start();
+      padNodes.push(o,o2);
+    }
+    padNodes.gain=g;
+    padNodes.filter=f;
+    g.gain.linearRampToValueAtTime(0.045, audioCtx.currentTime+2);
+  } else if(!on && padNodes){
+    const g=padNodes.gain;
+    g.gain.linearRampToValueAtTime(0.0001, audioCtx.currentTime+1);
+    const nodes=padNodes;
+    setTimeout(()=>{ try{ nodes.forEach(n=>n.stop&&n.stop()); }catch(e){} }, 1500);
+    padNodes=null;
+  }
+}
+
+// schedule ahead
+let schedBar=0;
+let musicTimer=null;
+
+function schedule(){
+  if(!audioCtx) return;
+  const now = audioCtx.currentTime;
+  const demoT = now - musicStart;
+  if(demoT > SC.END + 2){ ensurePad(false); return; }
+
+  const stepDur = BEAT / 4; // 16th
+  const barDur = BAR;
+
+  // schedule 2 bars ahead
+  while(true){
+    const barStart = musicStart + schedBar * barDur;
+    if(barStart > now + 1.5) break;
+    if(barStart + barDur < now - 0.1){ schedBar++; continue; }
+
+    const arr = arrangement(schedBar);
+    ensurePad(arr.pad);
+
+    for(let step=0; step<16; step++){
+      const t = barStart + step*stepDur;
+      if(t < now - 0.05) continue;
+
+      if(arr.kick && arr.kick[step%arr.kick.length]) playKick(t);
+      if(arr.snare && arr.snare[step%arr.snare.length]) playSnare(t);
+      if(arr.hat){
+        const h=arr.hat[step%arr.hat.length];
+        if(h===1) playHat(t,false);
+        if(h===2) playHat(t,true);
+      }
+      if(arr.bass){
+        const n=arr.bass[step%arr.bass.length];
+        if(n){
+          // find duration (until next note or 2 steps)
+          let dur=stepDur*1.5;
+          playBass(t, NOTE[n], dur);
+        }
+      }
+      if(arr.arp){
+        const n=arr.arp[step%arr.arp.length];
+        if(n) playArp(t, NOTE[n], stepDur*0.9);
+      }
+      if(arr.lead){
+        const n=arr.lead[step%arr.lead.length];
+        if(n){
+          // longer hold: count following empties
+          let hold=1;
+          for(let k=step+1;k<16 && !arr.lead[k];k++) hold++;
+          playLead(t, NOTE[n], hold*stepDur*0.95);
+        }
+      }
+    }
+
+    // filter automation on pad
+    if(padNodes && padNodes.filter){
+      const ef = 400 + arr.energy*1200 + Math.sin(schedBar)*200;
+      try{ padNodes.filter.frequency.setValueAtTime(ef, barStart); }catch(e){}
+    }
+
+    schedBar++;
+    if(schedBar > 80) break;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  TEXT OVERLAY (Canvas 2D) — greetz / credits / scene titles
+// ═══════════════════════════════════════════════════════════════
+const overlay = document.createElement("canvas");
+overlay.style.cssText="position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:2";
+document.body.appendChild(overlay);
+const octx = overlay.getContext("2d");
+
+function resizeOverlay(){
+  const dpr=Math.min(devicePixelRatio||1,2);
+  overlay.width=Math.floor(innerWidth*dpr);
+  overlay.height=Math.floor(innerHeight*dpr);
+  octx.setTransform(dpr,0,0,dpr,0,0);
+}
+addEventListener("resize", resizeOverlay);
+resizeOverlay();
+
+const GREETZ = [
+  "greetz to all sceners",
+  "FARBRAUSCH · BRAIN CONTROL · STILL",
+  "ANDROMEDA · ASD · THE BLACK LOTUS",
+  "MERCURY · TBL · OUTRACKS · CNCD",
+  "LOGICOMA · KEWLERS · FAIRLIGHT",
+  "REVISION · ASSEMBLY · EVOKA · DEADLINKER",
+  "js1k · dwitter · shadertoy family",
+  "and you — for pressing play"
+];
+
+function drawTextLayer(t, sceneId, pr){
+  const w=innerWidth, h=innerHeight;
+  octx.clearRect(0,0,w,h);
+  octx.textAlign="center";
+  octx.textBaseline="middle";
+
+  // fade global
+  const fadeIn=Math.min(1,t/1.5);
+  const fadeOut=t>126? 1-Math.min(1,(t-126)/4) : 1;
+  const alpha = fadeIn*fadeOut;
+  if(alpha<=0.01) return;
+
+  // scene title cards short flash
+  const titles=["","GEOMETRY CORE","HYPER CORRIDOR","NEON MEGALOPOLIS","PLASMA OCEAN","SIGNAL · GREETZ","NULL HORIZON"];
+  const sceneStarts=[0,12,32,52,72,92,112];
+  for(let i=1;i<sceneStarts.length;i++){
+    const local = t - sceneStarts[i];
+    if(local>=0 && local<3.5){
+      const a = (local<0.6? local/0.6 : 1) * (local>2.5? 1-(local-2.5)/1 : 1) * alpha;
+      octx.save();
+      octx.globalAlpha=a*0.9;
+      octx.font="600 11px Courier New,monospace";
+      octx.fillStyle="#8cf";
+      octx.shadowColor="#f0f"; octx.shadowBlur=12;
+      octx.fillText("— SCENE 0"+i+" —", w/2, h*0.18);
+      octx.font="400 28px Courier New,monospace";
+      octx.fillStyle="#eef";
+      octx.letterSpacing="0.4em";
+      octx.fillText(titles[i], w/2, h*0.24);
+      octx.restore();
+    }
+  }
+
+  // intro caption
+  if(t>5 && t<11){
+    const a = Math.min(1,(t-5)/1)*Math.min(1,(11-t)/1.5)*alpha;
+    octx.save();
+    octx.globalAlpha=a*0.85;
+    octx.font="12px Courier New,monospace";
+    octx.fillStyle="#acf";
+    octx.shadowColor="#80f"; octx.shadowBlur=8;
+    octx.fillText("A SELF-CONTAINED WEBdemo", w/2, h*0.72);
+    octx.font="10px Courier New,monospace";
+    octx.fillStyle="#678";
+    octx.fillText("NO ASSETS · PURE MATH · 128 BPM", w/2, h*0.76);
+    octx.restore();
+  }
+
+  // greetz scroller
+  if(sceneId===5 || (t>=92 && t<112)){
+    const lt = t-92;
+    octx.save();
+    octx.globalAlpha=alpha*0.9;
+    for(let i=0;i<GREETZ.length;i++){
+      const y = h*0.35 + i*36 - lt*28;
+      if(y<-40 || y>h+40) continue;
+      const dist = Math.abs(y - h*0.5);
+      const bol = Math.max(0, 1 - dist/(h*0.35));
+      octx.globalAlpha = alpha * (0.35 + bol*0.65);
+      octx.font = (bol>0.6? "600 ":"400 ") + (14+bol*6) + "px Courier New,monospace";
+      octx.fillStyle = bol>0.5 ? "#f8f" : "#8af";
+      octx.shadowColor="#f0f"; octx.shadowBlur=bol*16;
+      octx.fillText(GREETZ[i].toUpperCase(), w/2, y);
+    }
+    octx.restore();
+  }
+
+  // finale credits
+  if(t>=115){
+    const lt=t-115;
+    const a=Math.min(1,lt/2)*alpha*(t<126?1:fadeOut);
+    octx.save();
+    octx.globalAlpha=a;
+    octx.shadowColor="#f0f"; octx.shadowBlur=20;
+    octx.font="400 42px Courier New,monospace";
+    octx.fillStyle="#fef";
+    octx.fillText("NEXUS·NULL", w/2, h*0.42);
+    octx.shadowBlur=8;
+    octx.font="11px Courier New,monospace";
+    octx.fillStyle="#9cf";
+    octx.fillText("CODE · VISUALS · AUDIO   //   PROCEDURAL", w/2, h*0.50);
+    octx.fillStyle="#678";
+    octx.font="10px Courier New,monospace";
+    octx.fillText("DEMOPARTY BUILD  ·  WEBGL2 + WEBAUDIO", w/2, h*0.56);
+    octx.fillText("DEDICATED TO THE SCENE", w/2, h*0.62);
+    octx.restore();
+  }
+
+  // end board
+  if(t>=128){
+    const a=Math.min(1,(t-128)/1.5);
+    octx.save();
+    octx.globalAlpha=a;
+    octx.font="12px Courier New,monospace";
+    octx.fillStyle="#567";
+    octx.fillText("replay · refresh", w/2, h*0.5);
+    octx.restore();
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  TIMELINE / RENDER
+// ═══════════════════════════════════════════════════════════════
+let running=false, t0=0;
+const hud=document.getElementById("hud");
+
+function sceneAt(t){
+  if(t < SC.GEOM)   return {id:0, start:SC.INTRO,  end:SC.GEOM};
+  if(t < SC.TUNNEL) return {id:1, start:SC.GEOM,   end:SC.TUNNEL};
+  if(t < SC.CITY)   return {id:2, start:SC.TUNNEL, end:SC.CITY};
+  if(t < SC.PLASMA) return {id:3, start:SC.CITY,   end:SC.PLASMA};
+  if(t < SC.GREETZ) return {id:4, start:SC.PLASMA, end:SC.GREETZ};
+  if(t < SC.FINALE) return {id:5, start:SC.GREETZ, end:SC.FINALE};
+  return               {id:6, start:SC.FINALE, end:SC.END};
+}
+
+// decay kick env each frame from audio-ish estimate
+let lastKickPulse=0;
+function estimateKick(t){
+  // predict from pattern
+  const stepDur=BEAT/4;
+  const step = Math.floor(t / stepDur);
+  const bar = Math.floor(step/16);
+  const s = step % 16;
+  const arr = arrangement(bar);
+  // was this step a kick recently?
+  const since = t - step*stepDur;
+  if(arr.kick && arr.kick[s%arr.kick.length] && since < 0.2){
+    return Math.exp(-since*12);
+  }
+  // also previous
+  if(s>0 && arr.kick && arr.kick[(s-1)%arr.kick.length] && since+stepDur < 0.2){
+    return Math.exp(-(since+stepDur)*12);
+  }
+  return 0;
+}
+
+function energyAt(t){
+  // rough music energy for GT uniform
+  if(t<4) return t/4*0.3;
+  if(t<12) return 0.4;
+  if(t<32) return 0.65;
+  if(t<52) return 0.9;
+  if(t<72) return 0.75;
+  if(t<92) return 0.85;
+  if(t<112) return 0.7;
+  if(t<126) return 1.0;
+  return Math.max(0, 1-(t-126)/4);
+}
+
+function frame(now){
+  if(!running) return;
+  resize();
+  const t = (audioCtx ? (audioCtx.currentTime - musicStart) : (now/1000 - t0));
+  // stop drawing heavy after end+2
+  if(t > SC.END + 3){ drawTextLayer(t,6,1); return; }
+
+  schedule();
+
+  const sc = sceneAt(t);
+  const pr = (t - sc.start) / Math.max(0.001, sc.end - sc.start);
+  const kick = estimateKick(t);
+  kickEnv = Math.max(kickEnv*0.9, kick);
+
+  gl.useProgram(prog);
+  gl.uniform2f(U.R, canvas.width, canvas.height);
+  gl.uniform1f(U.T, t);
+  gl.uniform1f(U.SC, sc.id);
+  gl.uniform1f(U.PR, Math.min(1, Math.max(0, pr)));
+  gl.uniform1f(U.BPM, BPM);
+  gl.uniform1f(U.KICK, kick);
+  gl.uniform1f(U.GT, energyAt(t));
+
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  drawTextLayer(t, sc.id, pr);
+
+  // HUD
+  const mm = String(Math.floor(t/60)).padStart(2,"0");
+  const ss = String(Math.floor(t%60)).padStart(2,"0");
+  const sn = ["INTRO","GEOM","TUNNEL","CITY","PLASMA","GREETZ","FINALE"][sc.id]||"—";
+  hud.textContent = `NEXUS·NULL // T:${mm}:${ss} // ${sn} // ${BPM}BPM`;
+
+  requestAnimationFrame(frame);
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  START
+// ═══════════════════════════════════════════════════════════════
+function start(){
+  if(running) return;
+  const ui=document.getElementById("ui");
+  ui.classList.add("gone");
+  setTimeout(()=>ui.remove(), 900);
+  hud.classList.add("on");
+
+  audioCtx = new (window.AudioContext||window.webkitAudioContext)();
+  masterGain = audioCtx.createGain();
+  masterGain.gain.value = 0.55;
+  // soft compressor for polish
+  const comp = audioCtx.createDynamicsCompressor();
+  comp.threshold.value=-18; comp.knee.value=12; comp.ratio.value=4;
+  comp.attack.value=0.003; comp.release.value=0.15;
+  // subtle master filter
+  const mfilter = audioCtx.createBiquadFilter();
+  mfilter.type="lowpass"; mfilter.frequency.value=14000;
+  masterGain.connect(comp); comp.connect(mfilter); mfilter.connect(audioCtx.destination);
+
+  musicStart = audioCtx.currentTime + 0.15;
+  schedBar = 0;
+  running=true;
+  t0 = performance.now()/1000;
+  // schedule loop
+  musicTimer = setInterval(schedule, 100);
+  schedule();
+  requestAnimationFrame(frame);
+}
+
+document.getElementById("ui").addEventListener("click", start);
+addEventListener("keydown", e=>{ if(e.code==="Space"||e.code==="Enter") start(); });
+
+// nice idle state: very subtle render of intro frame without audio
+(function idle(){
+  if(running) return;
+  resize();
+  gl.useProgram(prog);
+  gl.uniform2f(U.R, canvas.width, canvas.height);
+  gl.uniform1f(U.T, 2.5);
+  gl.uniform1f(U.SC, 0);
+  gl.uniform1f(U.PR, 0.2);
+  gl.uniform1f(U.BPM, BPM);
+  gl.uniform1f(U.KICK, 0);
+  gl.uniform1f(U.GT, 0.3);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  requestAnimationFrame(idle);
+})();
+</script>
+</body>
+</html>

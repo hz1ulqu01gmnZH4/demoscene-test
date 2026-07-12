@@ -1,0 +1,1394 @@
+<!doctype html>
+<!--
+  ╔══════════════════════════════════════════════════════════════════╗
+  ║  R E S O N A N T   N U L L                                       ║
+  ║  a GROK production · 2026 · single-file demoparty entry          ║
+  ║                                                                  ║
+  ║  120 seconds · 128 BPM · WebGL2 + procedural WebAudio            ║
+  ║  no external assets · competition / demoparty level              ║
+  ║                                                                  ║
+  ║  Scene map                                                       ║
+  ║    00 null field      — cold deep-space open                     ║
+  ║    01 hex conduit     — luminous hexagonal dive                  ║
+  ║    02 steel cathedral — infinite modular city stack              ║
+  ║    03 plasma sea      — gyroid ocean under a dying star          ║
+  ║    04 lattice rupture — full-energy fractal burn                 ║
+  ║    05 resonant null   — the silent instrument                    ║
+  ║    06 epilogue        — greetings / fade                         ║
+  ║                                                                  ║
+  ║  flags: ?t=40&mute=1  (seek + silent visuals)                    ║
+  ╚══════════════════════════════════════════════════════════════════╝
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>RESONANT NULL — a grok production</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect x='18' y='18' width='64' height='64' rx='8' fill='none' stroke='%2366e0ff' stroke-width='6'/><circle cx='50' cy='50' r='14' fill='%23ff66aa'/></svg>">
+<style>
+  html,body{margin:0;height:100%;background:#000;overflow:hidden;cursor:default;touch-action:none}
+  canvas{position:fixed;inset:0;width:100vw;height:100vh;display:block}
+  #ov{z-index:2;pointer-events:none}
+  #err{position:fixed;inset:0;z-index:9;display:none;place-items:center;color:#f88;
+       font:14px/1.6 ui-monospace,Menlo,monospace;background:#000;text-align:center;padding:2em;white-space:pre-wrap}
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<canvas id="ov"></canvas>
+<div id="err"></div>
+<script>
+'use strict';
+
+/* ════════════════════ timeline ════════════════════ */
+const DUR  = 120;
+const BPM  = 128;
+const SPB  = 60/BPM;                 // 0.46875s
+const BAR  = 4*SPB;                  // 1.875s
+const SECT = [0, 14, 30, 52, 68, 96, 112, 120];
+const ENERGY = [0.22, 0.58, 0.72, 0.48, 1.00, 0.55, 0.28];
+
+const qs = new URLSearchParams(location.search);
+const DEV_MUTE = qs.get('mute') === '1';
+const DEV_T    = parseFloat(qs.get('t') || '0') || 0;
+
+function fail(msg){
+  const e = document.getElementById('err');
+  e.style.display = 'grid';
+  e.textContent = msg;
+  throw new Error(msg);
+}
+const clamp = (x,a,b)=>Math.min(b,Math.max(a,x));
+const sstep = (a,b,x)=>{const k=clamp((x-a)/(b-a),0,1);return k*k*(3-2*k);};
+const lerp  = (a,b,t)=>a+(b-a)*t;
+const TAU = Math.PI * 2;
+
+/* ════════════════════ WebGL setup ════════════════════ */
+const glc = document.getElementById('gl');
+const gl  = glc.getContext('webgl2',{
+  antialias:false, alpha:false, depth:false, powerPreference:'high-performance'
+});
+if(!gl) fail('WebGL2 is required.\nOpen this file in a modern browser with hardware acceleration.');
+
+const extF  = gl.getExtension('EXT_color_buffer_float') || gl.getExtension('EXT_color_buffer_half_float');
+const hdrFmt = (extF && gl.getExtension('EXT_color_buffer_float')) ? gl.RGBA16F : gl.RGBA8;
+
+function sh(type, src){
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if(!gl.getShaderParameter(s, gl.COMPILE_STATUS))
+    fail('Shader compile:\n' + gl.getShaderInfoLog(s));
+  return s;
+}
+function prog(fsSrc){
+  const p = gl.createProgram();
+  gl.attachShader(p, sh(gl.VERTEX_SHADER, VS));
+  gl.attachShader(p, sh(gl.FRAGMENT_SHADER, fsSrc));
+  gl.linkProgram(p);
+  if(!gl.getProgramParameter(p, gl.LINK_STATUS))
+    fail('Program link:\n' + gl.getProgramInfoLog(p));
+  return p;
+}
+const VS = `#version 300 es
+void main(){
+  vec2 v = vec2(float((gl_VertexID<<1)&2), float(gl_VertexID&2));
+  gl_Position = vec4(v*2.-1., 0., 1.);
+}`;
+
+/* ════════════════════ scene shader ════════════════════ */
+const FS_SCENE = `#version 300 es
+precision highp float;
+uniform vec2  uRes;
+uniform float uT;
+uniform float uKick;
+uniform float uEnergy;
+uniform float uSection; // 0..6 continuous with blend
+out vec4 fragColor;
+
+const float PI = 3.14159265359;
+const float TAU = 6.28318530718;
+
+mat2 rot(float a){ float c=cos(a),s=sin(a); return mat2(c,-s,s,c); }
+float hash21(vec2 p){
+  p = fract(p*vec2(234.34, 435.345));
+  p += dot(p, p+34.23);
+  return fract(p.x*p.y);
+}
+float noise2(vec2 p){
+  vec2 i=floor(p), f=fract(p); f=f*f*(3.-2.*f);
+  float a=hash21(i), b=hash21(i+vec2(1,0)), c=hash21(i+vec2(0,1)), d=hash21(i+vec2(1,1));
+  return mix(mix(a,b,f.x), mix(c,d,f.x), f.y);
+}
+float fbm(vec2 p){
+  float v=0., a=.5;
+  mat2 m = rot(.55);
+  for(int i=0;i<5;i++){ v+=a*noise2(p); p=m*p*2.03; a*=.5; }
+  return v;
+}
+vec3 pal(float t, vec3 a, vec3 b, vec3 c, vec3 d){
+  return a + b*cos(TAU*(c*t+d));
+}
+float smin(float a, float b, float k){
+  float h = clamp(.5+.5*(b-a)/k, 0., 1.);
+  return mix(b,a,h) - k*h*(1.-h);
+}
+float sdBox(vec3 p, vec3 b){
+  vec3 q = abs(p)-b;
+  return length(max(q,0.)) + min(max(q.x,max(q.y,q.z)),0.);
+}
+float sdSphere(vec3 p, float r){ return length(p)-r; }
+float hexDist(vec2 p){
+  p=abs(p);
+  return max(p.x*.866025+p.y*.5, p.y);
+}
+mat3 look(vec3 ro, vec3 ta, float roll){
+  vec3 f = normalize(ta-ro);
+  vec3 r = normalize(cross(vec3(sin(roll), cos(roll), 0.), f));
+  vec3 u = cross(f, r);
+  return mat3(r,u,f);
+}
+
+/* ── 00 · null field ─────────────────────────────── */
+float starLayer(vec2 uv, float dens, float t, float scale){
+  vec2 g = uv*scale;
+  vec2 id = floor(g), f = fract(g)-.5;
+  float h = hash21(id);
+  if(h < dens) return 0.;
+  vec2 o = vec2(hash21(id+3.1), hash21(id+7.9))-.5;
+  float d = length(f - o*.7);
+  float tw = .55 + .45*sin(t*(2.+h*6.) + h*40.);
+  return smoothstep(.045, 0., d) * tw * (h-dens) * (1./(1.-dens)) * 2.2;
+}
+vec3 scNull(vec2 uv){
+  float t = uT;
+  float z = 1.4 - .25*smoothstep(0.,14.,t);
+  vec2 p = uv*z + vec2(t*.012, -t*.006);
+  vec2 q = vec2(fbm(p+vec2(0., t*.03)), fbm(p+vec2(4.2,1.7)));
+  float f = fbm(p + 1.8*q);
+  vec3 col = mix(vec3(.004,.006,.018), vec3(.04,.02,.10), clamp(f*f*2.4,0.,1.));
+  col = mix(col, vec3(.08,.22,.45), smoothstep(.25,.9,q.x)*f*.85);
+  col = mix(col, vec3(.55,.18,.42), smoothstep(.5,1.,q.y)*f*.55);
+  // distant signal ring
+  float ring = abs(length(uv*vec2(1.,1.15)) - (.55+.08*sin(t*.4)));
+  col += vec3(.4,.85,1.) * exp(-ring*28.) * (.08 + .12*uKick);
+  col += vec3(1.,.95,.85) * starLayer(uv+vec2(t*.003,0.), .86, t, 26.);
+  col += vec3(.65,.8,1.)  * starLayer(uv*1.5+vec2(4.,t*.005), .9, t, 40.) * .55;
+  // central void pulse
+  float core = exp(-length(uv)*3.2);
+  col += vec3(.25,.55,.95)*core*(.05+.08*sin(t*1.2));
+  col *= smoothstep(0., 2.4, t);
+  col *= 1. + .35*smoothstep(12.,14.,t);
+  return col;
+}
+
+/* ── 01 · hex conduit ────────────────────────────── */
+vec3 scConduit(vec2 uv){
+  float t = uT - 14.;
+  uv *= rot(t*.07 + .1*sin(t*.3));
+  float r = max(hexDist(uv), 1e-4);
+  float depth = .42 / r;
+  float a = atan(uv.y, uv.x) + depth*.45 + t*.18;
+  float z = depth + t*2.8;
+  // 6-fold
+  float ha = abs(mod(a + PI/6., PI/3.) - PI/6.);
+  vec2 st = vec2(ha*4.2, z);
+  vec2 cell = floor(st*vec2(2.5, 1.1));
+  float shade = .4 + .6*hash21(cell);
+  vec2 fr = fract(st*vec2(2.5,1.1));
+  float panel = max(smoothstep(.94,.99,fr.x), smoothstep(.92,.98,fr.y));
+  float atten = exp(-depth*.38);
+  float grit = .4 + 1.2*fbm(st*vec2(1.8,.7) + cell);
+  vec3 col = vec3(.03,.04,.07)*shade*atten*grit;
+  // neon seams
+  float flow = pow(.5+.5*sin(z*1.8 - t*10.), 4.);
+  col += vec3(.2, .95, 1.) * panel * atten * (.28 + .9*flow);
+  // charge rings
+  float ring = smoothstep(.9,.995, 1.-abs(fract(z*.42)*2.-1.));
+  col += vec3(1.,.35,.7) * ring * atten * (.35 + 1.4*uKick);
+  // axis glow
+  col += vec3(.45,.9,1.) * exp(-r*6.5) * (.18 + .9*uKick);
+  // edge vignette as walls approach
+  col *= 1. - .5*smoothstep(.7, 1.6, r);
+  col *= smoothstep(0., .5, t);
+  return col;
+}
+
+/* ── 02 · steel cathedral (modular city) ─────────── */
+float menger(vec3 p, out float trap){
+  float d = sdBox(p, vec3(1.));
+  float s = 1.;
+  trap = 1e9;
+  for(int i=0;i<4;i++){
+    vec3 a = mod(p*s, 2.)-1.;
+    s *= 3.;
+    vec3 q = abs(1. - 3.*abs(a));
+    float da = max(q.x,q.y), db = max(q.y,q.z), dc = max(q.z,q.x);
+    float c = (min(da, min(db,dc)) - 1.)/s;
+    d = max(d, c);
+    trap = min(trap, length(a));
+  }
+  return d;
+}
+float mapCity(vec3 p, out float trap){
+  p.xy *= rot(.05*sin(p.z*.07));
+  vec3 q = mod(p + vec3(0.,0.,0.), 4.) - 2.;
+  float d = menger(q*.55, trap)/.55;
+  // occasional pillars
+  vec3 c = mod(p, vec3(8.,0.,8.)) - vec3(4.,0.,4.);
+  float pillar = sdBox(c - vec3(0.,0.,0.), vec3(.25, 40., .25));
+  trap = min(trap, pillar*4.);
+  return smin(d, pillar, .15);
+}
+vec3 scCity(vec2 uv){
+  float t = uT - 30.;
+  vec3 ro = vec3(.3*sin(t*.42), .25*cos(t*.31)+.1, t*1.65);
+  vec3 ta = ro + vec3(.4*sin(t*.2), .25*cos(t*.17), 2.2);
+  mat3 cam = look(ro, ta, .04*sin(t*.25));
+  vec3 rd = normalize(cam * vec3(uv, 1.35));
+
+  float tRay = 0., trap = 0., hitTrap = 0.;
+  float hit = -1.;
+  for(int i=0;i<80;i++){
+    vec3 p = ro + rd*tRay;
+    float d = mapCity(p, trap);
+    if(d < .001*tRay){ hit = tRay; hitTrap = trap; break; }
+    tRay += d;
+    if(tRay > 55.) break;
+  }
+
+  vec3 col = vec3(.01,.015,.04);
+  // fog backdrop
+  float fogA = 1. - exp(-tRay*.035);
+  col = mix(col, vec3(.04,.08,.16), fogA);
+
+  if(hit > 0.){
+    vec3 p = ro + rd*hit;
+    // cheap normal
+    vec2 e = vec2(.0015,0.);
+    float trash;
+    vec3 n = normalize(vec3(
+      mapCity(p+e.xyy, trash) - mapCity(p-e.xyy, trash),
+      mapCity(p+e.yxy, trash) - mapCity(p-e.yxy, trash),
+      mapCity(p+e.yyx, trash) - mapCity(p-e.yyx, trash)
+    ));
+    vec3 ldir = normalize(vec3(.4, .8, .3));
+    float diff = max(dot(n, ldir), 0.);
+    float fre  = pow(1. - max(dot(n, -rd), 0.), 3.);
+    vec3 base = mix(vec3(.06,.09,.14), vec3(.15,.45,.65), clamp(1.-hitTrap,0.,1.));
+    base = mix(base, vec3(.9,.35,.55), smoothstep(.3,.05, hitTrap)*.5);
+    col = base * (.15 + .85*diff);
+    col += vec3(.4,.9,1.) * fre * (.4 + .8*uKick);
+    // vertical neon ribs
+    float ribs = pow(.5+.5*sin(p.y*6. + t*2.), 12.);
+    col += vec3(1.,.4,.7) * ribs * .25 * exp(-hit*.04);
+    col = mix(col, vec3(.02,.04,.1), fogA);
+  }
+  // flying ember particles
+  for(int k=0;k<6;k++){
+    float fk = float(k);
+    vec2 seed = vec2(fk*13.7, fk*5.3);
+    float z = fract(hash21(seed) + t*.12 + fk*.17);
+    vec2 o = (vec2(hash21(seed+1.2), hash21(seed+3.4))-.5)*2.4;
+    float depth = mix(12., .8, z);
+    vec2 pp = o / depth;
+    float d = length(uv - pp);
+    float s = .008 / depth;
+    col += vec3(.5, .9, 1.) * smoothstep(s, 0., d) * z * (.3+.7*uKick);
+  }
+  col *= smoothstep(0., .7, t);
+  return col * (1. + .25*uKick);
+}
+
+/* ── 03 · plasma sea (gyroid) ────────────────────── */
+float gyroid(vec3 p){
+  return sin(p.x)*cos(p.y) + sin(p.y)*cos(p.z) + sin(p.z)*cos(p.x);
+}
+float mapSea(vec3 p){
+  float g = gyroid(p*1.15) * .35;
+  float plane = p.y + .4 + .15*sin(p.x*.6 + uT*.4) + .1*sin(p.z*.4);
+  return smin(plane, g, .5) - .02*uKick;
+}
+vec3 scSea(vec2 uv){
+  float t = uT - 52.;
+  vec3 ro = vec3(sin(t*.15)*1.2, .9 + .15*sin(t*.4), t*.9);
+  vec3 ta = ro + vec3(0., -.4, 1.5);
+  mat3 cam = look(ro, ta, .03*sin(t*.2));
+  vec3 rd = normalize(cam * vec3(uv, 1.4));
+
+  float tRay = 0.;
+  float hit = -1.;
+  for(int i=0;i<90;i++){
+    vec3 p = ro + rd*tRay;
+    float d = mapSea(p);
+    if(abs(d) < .0015*tRay){ hit = tRay; break; }
+    tRay += abs(d)*.7;
+    if(tRay > 40.) break;
+  }
+
+  // sky gradient
+  vec3 sky = mix(vec3(.02,.03,.08), vec3(.55,.2,.25), smoothstep(-.1,.6, rd.y));
+  sky = mix(sky, vec3(.15,.4,.65), exp(-abs(rd.y)*4.)*.4);
+  // artificial sun
+  vec3 sunDir = normalize(vec3(.3, .15, 1.));
+  float sun = pow(max(dot(rd, sunDir),0.), 80.);
+  sky += vec3(1.,.7,.4) * sun * 1.6;
+  sky += vec3(1.,.4,.3) * pow(max(dot(rd, sunDir),0.), 8.) * .35;
+
+  vec3 col = sky;
+  if(hit > 0.){
+    vec3 p = ro + rd*hit;
+    vec2 e = vec2(.002,0.);
+    vec3 n = normalize(vec3(
+      mapSea(p+e.xyy)-mapSea(p-e.xyy),
+      mapSea(p+e.yxy)-mapSea(p-e.yxy),
+      mapSea(p+e.yyx)-mapSea(p-e.yyx)
+    ));
+    float fre = pow(1.-max(dot(n,-rd),0.), 2.5);
+    float ndl = max(dot(n, sunDir), 0.);
+    vec3 albedo = pal(p.x*.15 + p.z*.1 + t*.05 + gyroid(p*2.)*.1,
+                      vec3(.5,.4,.5), vec3(.5,.4,.5),
+                      vec3(1.,1.,.8), vec3(.0,.25,.4));
+    albedo = mix(albedo, vec3(.1,.5,.7), .35);
+    col = albedo * (.12 + .75*ndl);
+    col += vec3(.6,.9,1.) * fre * .65;
+    // subsurface-ish
+    col += albedo * exp(-hit*.08) * (.2 + .5*uKick);
+    // reflection of sun
+    vec3 ref = reflect(rd, n);
+    col += vec3(1.,.75,.5) * pow(max(dot(ref, sunDir),0.), 40.) * 1.2;
+    col = mix(col, sky, 1.-exp(-hit*.05));
+  }
+  col *= smoothstep(0., .6, t);
+  return col;
+}
+
+/* ── 04 · lattice rupture (apollonian / fractal) ─── */
+float apollonian(vec3 p, out float trap){
+  float s = 1.8 + .25*sin(uT*.3);
+  float scale = 1.;
+  trap = 1e9;
+  for(int i=0;i<7;i++){
+    p = -1. + 2.*fract(.5*p + .5);
+    float r2 = dot(p,p);
+    trap = min(trap, r2);
+    float k = max(s/r2, 1.);
+    p *= k; scale *= k;
+  }
+  return .25*abs(p.y)/scale;
+}
+vec3 scRupture(vec2 uv){
+  float t = uT - 68.;
+  float camZ = t * 1.1;
+  vec3 ro = vec3(.4*sin(t*.35), .3*cos(t*.28), camZ);
+  vec3 ta = ro + vec3(.5*sin(t*.15), .3*sin(t*.12), 1.8);
+  mat3 cam = look(ro, ta, t*.04);
+  float fov = 1.25 - .15*uKick;
+  vec3 rd = normalize(cam * vec3(uv, fov));
+
+  float tRay = 0., trap=0., hitTrap=0.;
+  float hit = -1.;
+  for(int i=0;i<90;i++){
+    vec3 p = ro + rd*tRay;
+    // soft period so camera can roam forever
+    float d = apollonian(p*.9, trap)/.9;
+    if(d < .001*tRay){ hit=tRay; hitTrap=trap; break; }
+    tRay += d;
+    if(tRay > 25.) break;
+  }
+
+  vec3 col = vec3(0.005);
+  if(hit > 0.){
+    vec3 p = ro + rd*hit;
+    vec2 e = vec2(.001,0.);
+    float tr;
+    vec3 n = normalize(vec3(
+      apollonian(p*.9+e.xyy, tr) - apollonian(p*.9-e.xyy, tr),
+      apollonian(p*.9+e.yxy, tr) - apollonian(p*.9-e.yxy, tr),
+      apollonian(p*.9+e.yyx, tr) - apollonian(p*.9-e.yyx, tr)
+    ));
+    float fre = pow(1.-max(dot(n,-rd),0.), 2.2);
+    float ao  = clamp(hitTrap*2.5, 0., 1.);
+    vec3 albedo = pal(ao*1.5 + t*.08 + hit*.05,
+                      vec3(.5), vec3(.5),
+                      vec3(1.,.7,.4), vec3(.0,.15,.35));
+    albedo = mix(albedo, vec3(.9,.2,.5), smoothstep(.6,0.,ao));
+    float key = max(dot(n, normalize(vec3(.5,.7,.2))), 0.);
+    col = albedo * (.1 + .7*key + .4*ao);
+    col += vec3(1.,.6,.9) * fre * (.5 + 1.2*uKick);
+    // emissive veins
+    col += albedo * exp(-hitTrap*6.) * (1.2 + 2.*uKick);
+    col *= exp(-hit*.06);
+  } else {
+    col = vec3(.01,.01,.03) + vec3(.3,.1,.4)*pow(max(rd.y,0.),3.)*.2;
+  }
+  // beat strobe wash
+  col += vec3(.15,.4,.8) * uKick * .2;
+  col *= smoothstep(0., .5, t);
+  col *= 1. + .6*smoothstep(24., 28., t); // lift into finale
+  return col;
+}
+
+/* ── 05 · resonant null (monoliths) ──────────────── */
+float mapMono(vec3 p){
+  vec3 q = p;
+  q.x = abs(q.x);
+  // central slabs
+  float d = 1e9;
+  for(int i=0;i<5;i++){
+    float fi = float(i);
+    vec3 c = vec3(1.2 + fi*.55, 0., fi*1.8 - 2.);
+    vec3 b = vec3(.12 + .02*sin(fi*2.), 1.5 + .4*sin(fi), .12);
+    d = min(d, sdBox(q - c, b));
+  }
+  // ground plane
+  d = min(d, p.y + 1.2);
+  // floating orb
+  d = min(d, sdSphere(p - vec3(0., .6 + .1*sin(uT*1.5), 1.5), .25 + .05*uKick));
+  return d;
+}
+vec3 scMono(vec2 uv){
+  float t = uT - 96.;
+  vec3 ro = vec3(sin(t*.15)*1.8, .4 + .1*sin(t*.3), -3. + t*.35);
+  vec3 ta = vec3(0., .3, 1.2);
+  mat3 cam = look(ro, ta, 0.);
+  vec3 rd = normalize(cam * vec3(uv, 1.6));
+
+  float tRay=0., hit=-1.;
+  for(int i=0;i<80;i++){
+    float d = mapMono(ro+rd*tRay);
+    if(d < .001){ hit=tRay; break; }
+    tRay += d;
+    if(tRay > 40.) break;
+  }
+
+  vec3 col = mix(vec3(.01,.02,.05), vec3(.08,.04,.12), rd.y*.5+.5);
+  // horizon line glow
+  col += vec3(.4,.7,1.) * exp(-abs(rd.y)*18.) * .15;
+
+  if(hit > 0.){
+    vec3 p = ro + rd*hit;
+    vec2 e = vec2(.0015,0.);
+    vec3 n = normalize(vec3(
+      mapMono(p+e.xyy)-mapMono(p-e.xyy),
+      mapMono(p+e.yxy)-mapMono(p-e.yxy),
+      mapMono(p+e.yyx)-mapMono(p-e.yyx)
+    ));
+    float fre = pow(1.-max(dot(n,-rd),0.), 3.);
+    float ground = step(p.y, -1.15);
+    vec3 albedo = mix(vec3(.08,.09,.12), vec3(.02,.03,.05), ground);
+    // runes on slabs
+    float rune = step(.97, noise2(p.zy*4. + floor(p.x*2.)));
+    albedo += vec3(.3,.9,1.)*rune*(1.-ground)*.6;
+    float key = max(dot(n, normalize(vec3(-.3,.8,.4))),0.);
+    col = albedo*(.15+.85*key);
+    col += vec3(.5,.85,1.)*fre*.55;
+    // glowing orb contribution
+    vec3 orb = vec3(0., .6+.1*sin(uT*1.5), 1.5);
+    float od = length(p - orb);
+    col += vec3(1.,.4,.7) * exp(-od*2.5) * (.4 + uKick);
+  }
+  // stars
+  col += vec3(.8,.9,1.) * starLayer(uv + vec2(t*.002,0.), .9, t, 30.) * .4;
+  col *= smoothstep(0., .8, t);
+  // close fade preparation for epilogue
+  col *= 1. - .55*smoothstep(12., 16., t);
+  return col;
+}
+
+/* ── 06 · epilogue field ─────────────────────────── */
+vec3 scEpi(vec2 uv){
+  float t = uT - 112.;
+  float z = 1.2 + t*.02;
+  vec2 p = uv*z;
+  float f = fbm(p*1.5 + vec2(0., t*.05));
+  vec3 col = mix(vec3(.002,.004,.012), vec3(.05,.08,.18), f);
+  col += vec3(.4,.7,1.) * exp(-length(uv)*2.2) * (.12 + .08*sin(t));
+  col += vec3(1.,.9,.85) * starLayer(uv, .88, t+100., 22.) * .5;
+  col *= 1. - smoothstep(4., 7.8, t); // fade to black
+  return col;
+}
+
+/* ── section router with soft blends ─────────────── */
+vec3 sceneColor(vec2 uv, float t){
+  // blend windows ~0.6s at each boundary
+  const float B = .65;
+  float s0 = 1. - smoothstep(14.-B, 14., t);
+  float s1 = smoothstep(14.-B, 14., t) * (1. - smoothstep(30.-B, 30., t));
+  float s2 = smoothstep(30.-B, 30., t) * (1. - smoothstep(52.-B, 52., t));
+  float s3 = smoothstep(52.-B, 52., t) * (1. - smoothstep(68.-B, 68., t));
+  float s4 = smoothstep(68.-B, 68., t) * (1. - smoothstep(96.-B, 96., t));
+  float s5 = smoothstep(96.-B, 96., t) * (1. - smoothstep(112.-B, 112., t));
+  float s6 = smoothstep(112.-B, 112., t);
+
+  vec3 col = vec3(0.);
+  // only evaluate panels that contribute (branch is fine for progressive)
+  if(s0 > .001) col += scNull(uv) * s0;
+  if(s1 > .001) col += scConduit(uv) * s1;
+  if(s2 > .001) col += scCity(uv) * s2;
+  if(s3 > .001) col += scSea(uv) * s3;
+  if(s4 > .001) col += scRupture(uv) * s4;
+  if(s5 > .001) col += scMono(uv) * s5;
+  if(s6 > .001) col += scEpi(uv) * s6;
+  return col;
+}
+
+void main(){
+  vec2 uv = (gl_FragCoord.xy - .5*uRes) / uRes.y;
+  // slight lens breathing
+  uv *= 1. - .012*uKick*uEnergy;
+  vec3 col = sceneColor(uv, uT);
+  // global film response (pre-tonemap lift)
+  col *= .85 + .35*uEnergy;
+  fragColor = vec4(col, 1.);
+}
+`;
+
+/* ════════════════════ post pipeline ════════════════════ */
+const FS_BRIGHT = `#version 300 es
+precision highp float;
+uniform sampler2D uScene;
+uniform vec2 uRes;
+uniform float uScale;
+out vec4 o;
+void main(){
+  vec2 uv = gl_FragCoord.xy / uRes;
+  vec3 c = texture(uScene, min(uv*uScale, vec2(uScale) - 1.5/uRes)).rgb;
+  float l = dot(c, vec3(.299,.587,.114));
+  o = vec4(c * smoothstep(.65, 1.45, l), 1.);
+}`;
+const FS_BLUR = `#version 300 es
+precision highp float;
+uniform sampler2D uTex;
+uniform vec2 uRes, uDir;
+out vec4 o;
+void main(){
+  vec2 uv = gl_FragCoord.xy / uRes;
+  vec2 px = uDir / uRes;
+  vec3 c = texture(uTex, uv).rgb * .227027;
+  float w[4]; w[0]=.1945946; w[1]=.1216216; w[2]=.054054; w[3]=.016216;
+  for(int i=1;i<5;i++){
+    c += texture(uTex, uv + px*float(i)*1.5).rgb * w[i-1];
+    c += texture(uTex, uv - px*float(i)*1.5).rgb * w[i-1];
+  }
+  o = vec4(c, 1.);
+}`;
+const FS_POST = `#version 300 es
+precision highp float;
+uniform sampler2D uScene, uBloom;
+uniform vec2 uRes;
+uniform float uScale, uT, uFlash, uCA, uEnergy;
+out vec4 o;
+float hash(vec2 p){ p=fract(p*vec2(234.34,435.345)); p+=dot(p,p+34.23); return fract(p.x*p.y); }
+vec3 aces(vec3 x){ return clamp((x*(2.51*x+.03))/(x*(2.43*x+.59)+.14), 0., 1.); }
+vec3 samp(vec2 u){
+  vec2 mx = vec2(uScale) - 1.5/uRes;
+  return texture(uScene, min(u*uScale, mx)).rgb;
+}
+void main(){
+  vec2 uv = gl_FragCoord.xy / uRes;
+  vec2 cd = (uv-.5) * uCA;
+  vec3 c;
+  c.r = samp(uv+cd).r;
+  c.g = samp(uv).g;
+  c.b = samp(uv-cd).b;
+  vec3 bloom = texture(uBloom, uv).rgb;
+  c += bloom * (.6 + .55*uEnergy);
+  c = aces(c * 1.15);
+  // vignette
+  float vig = 1. - .38*pow(length(uv-.5)*1.4, 2.2);
+  c *= vig;
+  // scanline-ish (very subtle)
+  c *= .97 + .03*sin(gl_FragCoord.y*1.7 + uT*2.);
+  c = mix(c, vec3(1., .97, .94), uFlash*.8);
+  c += (hash(gl_FragCoord.xy + fract(uT)*vec2(91.,173.)) - .5) * .028;
+  c = pow(max(c, 0.), vec3(1./2.2));
+  o = vec4(c, 1.);
+}`;
+
+const pScene = prog(FS_SCENE);
+const pBright = prog(FS_BRIGHT);
+const pBlur   = prog(FS_BLUR);
+const pPost   = prog(FS_POST);
+const U = (p,n)=>gl.getUniformLocation(p,n);
+const uS = {
+  res:U(pScene,'uRes'), t:U(pScene,'uT'), kick:U(pScene,'uKick'),
+  en:U(pScene,'uEnergy'), sec:U(pScene,'uSection')
+};
+const uB = { scene:U(pBright,'uScene'), res:U(pBright,'uRes'), scale:U(pBright,'uScale') };
+const uL = { tex:U(pBlur,'uTex'), res:U(pBlur,'uRes'), dir:U(pBlur,'uDir') };
+const uP = {
+  scene:U(pPost,'uScene'), bloom:U(pPost,'uBloom'), res:U(pPost,'uRes'),
+  scale:U(pPost,'uScale'), t:U(pPost,'uT'), flash:U(pPost,'uFlash'),
+  ca:U(pPost,'uCA'), en:U(pPost,'uEnergy')
+};
+
+/* framebuffers */
+let W=0,H=0,QW=0,QH=0;
+let texScene=null,fbScene=null,texA=null,fbA=null,texB=null,fbB=null;
+
+function mkTarget(w,h){
+  const t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texStorage2D(gl.TEXTURE_2D, 1, hdrFmt, w, h);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  const f = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, f);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
+  if(gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE)
+    fail('Framebuffer incomplete — GPU cannot run this demo.');
+  return [t,f];
+}
+
+const oc = document.getElementById('ov');
+const octx = oc.getContext('2d');
+let CW=0, CH=0;
+
+function resize(){
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  const cw = innerWidth, ch = innerHeight;
+  let w = Math.round(cw*dpr), h = Math.round(ch*dpr);
+  const cap = 1920;
+  if(w > cap){ h = Math.round(h*cap/w); w = cap; }
+  if(w === W && h === H) return;
+  W=w; H=h; QW=Math.max(1,w>>2); QH=Math.max(1,h>>2);
+  glc.width=W; glc.height=H;
+  for(const f of [fbScene, fbA, fbB]) if(f) gl.deleteFramebuffer(f);
+  for(const t of [texScene, texA, texB]) if(t) gl.deleteTexture(t);
+  [texScene, fbScene] = mkTarget(W,H);
+  [texA, fbA] = mkTarget(QW,QH);
+  [texB, fbB] = mkTarget(QW,QH);
+  CW=cw; CH=ch;
+  const odpr = Math.min(devicePixelRatio||1, 2);
+  oc.width  = Math.round(cw*odpr);
+  oc.height = Math.round(ch*odpr);
+  octx.setTransform(oc.width/cw, 0, 0, oc.height/ch, 0, 0);
+  glowCache.clear();
+}
+addEventListener('resize', resize);
+glc.addEventListener('webglcontextlost', e=>{
+  e.preventDefault(); running=false;
+  fail('WebGL context lost — reload to restart.');
+});
+
+/* ════════════════════ sync ════════════════════ */
+function sectionIdx(t){
+  let i=0;
+  while(i < SECT.length-2 && t >= SECT[i+1]) i++;
+  return i;
+}
+function kickEnv(t){
+  // drums present in conduit/city/rupture
+  const drums = (t>=14 && t<52) || (t>=68 && t<96);
+  if(!drums) return (t>=96 && t<112) ? Math.exp(-4.5*((t% (SPB*2))/ (SPB*2)))*.35 : 0;
+  const p = (t % SPB) / SPB;
+  return Math.exp(-5.8*p);
+}
+function flashAt(t){
+  let f=0;
+  for(const b of [14,30,52,68,96,112]) if(t>=b) f = Math.max(f, Math.exp(-8.5*(t-b)));
+  return f;
+}
+
+/* ════════════════════ render ════════════════════ */
+let scale=1, emaMs=16, lastFrameAt=0;
+function draw(t){
+  const kick = kickEnv(t);
+  const en   = ENERGY[sectionIdx(t)];
+  const flash= flashAt(t);
+  const sw = Math.max(1, Math.round(W*scale));
+  const sh = Math.max(1, Math.round(H*scale));
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbScene);
+  gl.viewport(0,0,sw,sh);
+  gl.useProgram(pScene);
+  gl.uniform2f(uS.res, sw, sh);
+  gl.uniform1f(uS.t, t);
+  gl.uniform1f(uS.kick, kick);
+  gl.uniform1f(uS.en, en);
+  gl.uniform1f(uS.sec, sectionIdx(t));
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbA);
+  gl.viewport(0,0,QW,QH);
+  gl.useProgram(pBright);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, texScene);
+  gl.uniform1i(uB.scene, 0);
+  gl.uniform2f(uB.res, QW, QH);
+  gl.uniform1f(uB.scale, scale);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  gl.useProgram(pBlur);
+  gl.uniform2f(uL.res, QW, QH);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbB);
+  gl.bindTexture(gl.TEXTURE_2D, texA);
+  gl.uniform1i(uL.tex, 0);
+  gl.uniform2f(uL.dir, 1, 0);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbA);
+  gl.bindTexture(gl.TEXTURE_2D, texB);
+  gl.uniform2f(uL.dir, 0, 1);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0,0,W,H);
+  gl.useProgram(pPost);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texScene);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, texA);
+  gl.uniform1i(uP.scene, 0);
+  gl.uniform1i(uP.bloom, 1);
+  gl.uniform2f(uP.res, W, H);
+  gl.uniform1f(uP.scale, scale);
+  gl.uniform1f(uP.t, t);
+  gl.uniform1f(uP.flash, flash);
+  gl.uniform1f(uP.ca, 0.003 + flash*0.03 + kick*0.003*en);
+  gl.uniform1f(uP.en, en);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.activeTexture(gl.TEXTURE0);
+}
+
+/* ════════════════════ typography ════════════════════ */
+const glowCache = new Map();
+function glowText(key, text, px, color, tracking){
+  let e = glowCache.get(key);
+  if(!e){
+    const c = document.createElement('canvas');
+    const g = c.getContext('2d');
+    const f = `600 ${px}px "Helvetica Neue", Arial, sans-serif`;
+    g.font = f;
+    let wtot = 0;
+    for(const ch of text) wtot += g.measureText(ch).width + tracking;
+    c.width  = Math.ceil(wtot + px);
+    c.height = Math.ceil(px * 1.9);
+    const g2 = c.getContext('2d');
+    g2.font = f; g2.fillStyle = color; g2.textBaseline = 'middle';
+    let x = px*.5;
+    for(const ch of text){
+      g2.fillText(ch, x, c.height/2);
+      x += g2.measureText(ch).width + tracking;
+    }
+    const t1 = document.createElement('canvas');
+    t1.width  = Math.max(1, c.width>>2);
+    t1.height = Math.max(1, c.height>>2);
+    t1.getContext('2d').drawImage(c, 0, 0, t1.width, t1.height);
+    const b = document.createElement('canvas');
+    b.width = c.width; b.height = c.height;
+    const bg = b.getContext('2d');
+    bg.imageSmoothingEnabled = true;
+    bg.drawImage(t1, 0, 0, b.width, b.height);
+    e = { text:c, bloom:b, w:c.width, h:c.height };
+    glowCache.set(key, e);
+  }
+  return e;
+}
+function drawGlow(e, x, y, a, bloomScale){
+  octx.save();
+  octx.globalAlpha = a * .55;
+  octx.drawImage(e.bloom, x - e.w/2, y - e.h/2, e.w, e.h);
+  octx.globalAlpha = a;
+  octx.drawImage(e.text,  x - e.w/2, y - e.h/2);
+  octx.restore();
+}
+
+function textWindow(t, a, b, fade){
+  if(t < a-fade || t > b+fade) return 0;
+  if(t < a) return sstep(a-fade, a, t);
+  if(t > b) return 1 - sstep(b, b+fade, t);
+  return 1;
+}
+
+function overlay(t){
+  octx.clearRect(0,0,CW,CH);
+  octx.textAlign = 'center';
+
+  // intro title
+  let a = textWindow(t, 3.2, 9.5, 1.2);
+  if(a > 0.01){
+    const px = Math.min(CW*.07, 72);
+    const c = glowText('title'+px, 'RESONANT NULL', px, '#c8ecff', px*.22);
+    drawGlow(c, CW/2, CH*.42, a, 1);
+    const s = glowText('sub', 'A   G R O K   P R O D U C T I O N', 12, '#8fbdd8', 3);
+    drawGlow(s, CW/2, CH*.42 + px*.9, a*.9, 1);
+  }
+
+  // chapter captions
+  const caps = [
+    [15.5, 19.5, 'HEX CONDUIT'],
+    [31.5, 36.0, 'STEEL CATHEDRAL'],
+    [53.5, 58.0, 'PLASMA SEA'],
+    [69.5, 74.0, 'LATTICE RUPTURE'],
+    [97.5,103.0, 'THE INSTRUMENT'],
+  ];
+  for(const [a0,b0,label] of caps){
+    const aa = textWindow(t, a0, b0, .8);
+    if(aa > .01){
+      const c = glowText('cap'+label, label, 18, '#b8e4ff', 6);
+      drawGlow(c, CW/2, CH*.14, aa*.95, 1);
+    }
+  }
+
+  // mid-show taglines
+  a = textWindow(t, 42, 47, 1);
+  if(a>.01){
+    const c = glowText('tag1', 'architecture of infinite recursion', 14, '#c0d8ee', 2);
+    drawGlow(c, CW/2, CH*.82, a*.85, 1);
+  }
+  a = textWindow(t, 78, 84, 1);
+  if(a>.01){
+    const c = glowText('tag2', 'signal collapses into form', 14, '#ffc0d8', 2);
+    drawGlow(c, CW/2, CH*.82, a*.9, 1);
+  }
+
+  // greetings scroller
+  if(t >= 104 && t < 118){
+    const aa = textWindow(t, 105, 116.5, 1);
+    const greet = 'greetings  ·  revision  ·  fairlight  ·  conspiracy  ·  farbrausch  ·  fan  ·  tpolm  ·  cocoon  ·  andromeda  ·  complexity  ·  mercury  ·  spacepigs  ·  polymer  ·  you';
+    octx.save();
+    octx.globalAlpha = aa * .85;
+    octx.font = '500 13px ui-monospace, Menlo, monospace';
+    octx.fillStyle = 'rgba(170,210,240,0.95)';
+    const tw = octx.measureText(greet).width;
+    const x = CW + tw - ((t-104)/(118-104)) * (CW + tw*2);
+    octx.textAlign = 'left';
+    octx.fillText(greet, x, CH*.88);
+    octx.restore();
+  }
+
+  // end card during epilogue tail
+  if(t >= 114){
+    const aa = sstep(114, 116.5, t) * (1 - sstep(118.5, 120, t));
+    if(aa > .01){
+      const c = glowText('end', 'RESONANT NULL', 28, '#cfe8ff', 8);
+      drawGlow(c, CW/2, CH*.46, aa, 1);
+      octx.globalAlpha = aa * .8;
+      octx.font = '500 12px ui-monospace, Menlo, monospace';
+      octx.fillStyle = 'rgba(150,185,215,0.9)';
+      octx.textAlign = 'center';
+      octx.fillText('code · visuals · music  —  grok', CW/2, CH*.46 + 36);
+      octx.fillText('fin', CW/2, CH*.46 + 58);
+      octx.globalAlpha = 1;
+    }
+  }
+}
+
+/* ════════════════════ music engine ════════════════════
+   Offline tracker → stereo AudioBuffer.
+   Instruments: kick, snare, hat, bass, supersaw pad, arp, lead, riser, impact.
+   FX: sidechain duck, ping-pong delay, Schroeder reverb, soft clip.
+*/
+function midiHz(n){ return 440 * Math.pow(2, (n-69)/12); }
+
+async function renderSong(onProgress){
+  const SR = 44100;
+  const N  = Math.ceil(DUR * SR);
+  const barCount = Math.ceil(DUR / BAR);
+  const tick = ()=>new Promise(r=>setTimeout(r,0));
+
+  // partial buffers
+  const drm = new Float32Array(N);   // dry drums
+  const mel = new Float32Array(N);   // melodic pre-duck
+  const dlyS = new Float32Array(N);  // delay send
+  const revS = new Float32Array(N);  // reverb send
+  const duckC = new Float32Array(N); // duck coefficient per sample
+  duckC.fill(1);
+
+  function add(buf, i, v){
+    if(i>=0 && i<N) buf[i] += v;
+  }
+  function envADSR(i, a, d, s, r, gate){
+    // returns amp; gate in samples
+    if(i < 0) return 0;
+    if(i < a) return i/a;
+    if(i < a+d) return 1 - (1-s)*((i-a)/d);
+    if(i < gate) return s;
+    const ri = i - gate;
+    if(ri < r) return s * (1 - ri/r);
+    return 0;
+  }
+
+  // noise table
+  const noise = new Float32Array(SR);
+  for(let i=0;i<SR;i++) noise[i] = Math.random()*2-1;
+
+  function kick(t0){
+    const i0 = Math.floor(t0*SR);
+    const len = Math.floor(.22*SR);
+    let ph=0;
+    for(let i=0;i<len;i++){
+      const tt = i/SR;
+      const fr = 150 * Math.exp(-42*tt) + 42 * Math.exp(-8*tt);
+      ph += fr/SR;
+      const amp = Math.exp(-14*tt);
+      const v = Math.sin(TAU*ph) * amp * 1.15;
+      add(drm, i0+i, v);
+      // duck melodic bed
+      const di = i0+i;
+      if(di>=0 && di<N) duckC[di] = Math.min(duckC[di], 0.22 + 0.78*(1-Math.exp(-18*tt)));
+    }
+  }
+  function snare(t0, gain){
+    const i0 = Math.floor(t0*SR);
+    const len = Math.floor(.18*SR);
+    let ph=0;
+    for(let i=0;i<len;i++){
+      const tt=i/SR;
+      const amp = Math.exp(-22*tt) * gain;
+      ph += 180/SR;
+      const body = Math.sin(TAU*ph) * Math.exp(-35*tt);
+      const n = noise[(i*3)%SR] * Math.exp(-18*tt);
+      add(drm, i0+i, (body*.4 + n*.75) * amp * .7);
+    }
+  }
+  function hat(t0, open, gain){
+    const i0 = Math.floor(t0*SR);
+    const dec = open ? 18 : 55;
+    const len = Math.floor((open?.2:.05)*SR);
+    // crude bandpass-ish: differenced noise
+    let prev=0;
+    for(let i=0;i<len;i++){
+      const n = noise[(i*7+113)%SR];
+      const bp = n - prev; prev = n;
+      const amp = Math.exp(-dec*i/SR) * gain * .28;
+      add(drm, i0+i, bp * amp);
+    }
+  }
+  function bass(t0, note, lenBeats, gain){
+    const i0 = Math.floor(t0*SR);
+    const len = Math.floor(lenBeats*SPB*SR);
+    const f0 = midiHz(note);
+    let ph=0, ph2=0;
+    for(let i=0;i<len;i++){
+      const tt=i/SR;
+      const gate = len - Math.floor(.03*SR);
+      const e = envADSR(i, 0.002*SR, 0.06*SR, .7, 0.05*SR, gate);
+      // soft saw via polyBLEP-less stack + detune
+      ph  += f0/SR;
+      ph2 += f0*1.005/SR;
+      let s = 0;
+      // 3 partials of saw
+      for(let h=1;h<=5;h++){
+        s += Math.sin(TAU*ph*h)/h;
+        s += Math.sin(TAU*ph2*h)/h * .5;
+      }
+      s *= .22;
+      // mild LPF feel: double one-pole would need state; scale highs via gain on impurity
+      const v = s * e * gain * 0.55;
+      add(mel, i0+i, v);
+      add(revS, i0+i, v*.15);
+    }
+  }
+  function pad(t0, notes, lenBeats, gain){
+    const i0 = Math.floor(t0*SR);
+    const len = Math.floor(lenBeats*SPB*SR);
+    const freqs = notes.map(midiHz);
+    const ph = freqs.map(()=>Math.random());
+    for(let i=0;i<len;i++){
+      const gate = len - Math.floor(.2*SR);
+      const e = envADSR(i, 0.25*SR, 0.4*SR, .7, 0.5*SR, gate);
+      let s = 0;
+      for(let n=0;n<freqs.length;n++){
+        // 5-voice supersaw
+        for(let v=0;v<5;v++){
+          const det = 1 + (v-2)*0.0045;
+          ph[n] += freqs[n]*det/SR;
+          // naive saw
+          const x = ph[n] % 1;
+          s += (2*x - 1) * .08;
+        }
+      }
+      // slow LFO filter sim — just amplitude shimmer
+      const lfo = .85 + .15*Math.sin(i/SR * 1.7);
+      const v = s * e * gain * lfo * 0.35;
+      add(mel, i0+i, v);
+      add(dlyS, i0+i, v*.25);
+      add(revS, i0+i, v*.55);
+    }
+  }
+  function pluck(t0, note, gain){
+    const i0 = Math.floor(t0*SR);
+    const len = Math.floor(.35*SR);
+    const f0 = midiHz(note);
+    let ph=0, ph2=0;
+    for(let i=0;i<len;i++){
+      const tt=i/SR;
+      const e = Math.exp(-9*tt);
+      ph  += f0/SR;
+      ph2 += f0*2.003/SR;
+      const s = Math.sin(TAU*ph) + .35*Math.sin(TAU*ph2) + .12*Math.sin(TAU*ph*3);
+      const v = s * e * gain * .18;
+      add(mel, i0+i, v);
+      add(dlyS, i0+i, v*.7);
+      add(revS, i0+i, v*.25);
+    }
+  }
+  function lead(t0, note, lenBeats, gain){
+    const i0 = Math.floor(t0*SR);
+    const len = Math.floor(lenBeats*SPB*SR);
+    const f0 = midiHz(note);
+    let ph=0, ph2=0;
+    for(let i=0;i<len;i++){
+      const gate = len - Math.floor(.08*SR);
+      const e = envADSR(i, 0.01*SR, 0.08*SR, .6, 0.12*SR, gate);
+      const vib = 1 + .003*Math.sin(i/SR*6);
+      ph  += f0*vib/SR;
+      ph2 += f0*1.007*vib/SR;
+      // square-ish + sine
+      const sq = Math.sign(Math.sin(TAU*ph)) * .35 + Math.sin(TAU*ph)*.5 + Math.sin(TAU*ph2)*.25;
+      const v = sq * e * gain * .22;
+      add(mel, i0+i, v);
+      add(dlyS, i0+i, v*.55);
+      add(revS, i0+i, v*.35);
+    }
+  }
+  function riser(t0, dur, gain){
+    const i0 = Math.floor(t0*SR);
+    const len = Math.floor(dur*SR);
+    let ph=0;
+    for(let i=0;i<len;i++){
+      const tt = i/len;
+      const f = 80 * Math.pow(12, tt);
+      ph += f/SR;
+      const n = noise[i%SR];
+      const amp = tt*tt * gain * .25;
+      add(mel, i0+i, (Math.sin(TAU*ph)*.4 + n*.6) * amp);
+      add(revS, i0+i, n*amp*.4);
+    }
+  }
+  function impact(t0){
+    const i0 = Math.floor(t0*SR);
+    const len = Math.floor(.6*SR);
+    let ph=0;
+    for(let i=0;i<len;i++){
+      const tt=i/SR;
+      ph += (60*Math.exp(-8*tt) + 30)/SR;
+      const n = noise[i%SR] * Math.exp(-6*tt);
+      const v = (Math.sin(TAU*ph)*.7 + n*.5) * Math.exp(-4*tt) * .9;
+      add(drm, i0+i, v);
+      add(revS, i0+i, v*.5);
+    }
+  }
+
+  // ── harmonic material ──
+  // Dm · Bb · F · C   (natural minor loop feel, techno)
+  const CHORDS = [
+    [50, 53, 57, 60], // Dm
+    [46, 50, 53, 58], // Bb
+    [53, 57, 60, 65], // F
+    [48, 52, 55, 60], // C
+  ];
+  const BASSN = [38, 34, 41, 36]; // D1 Bb0 F1 C1  (midi)
+  const ARP = [
+    [62, 65, 69, 72],
+    [58, 62, 65, 70],
+    [65, 69, 72, 77],
+    [60, 64, 67, 72],
+  ];
+  // lead phrase fragments (beatOffset inside 8 bars, midi, lengthBeats)
+  const PHRASE = [
+    [0,  74, 1.5],[2,  72, 1],[3,  69, 1],[4,  72, 2],[6.5, 74, .5],[7,  77, 1],
+    [8,  76, 1.5],[10, 74, 1],[11, 72, 1],[12, 69, 2],[14.5,67, .5],[15, 69, 1],
+  ];
+
+  for(let bar=0; bar<barCount; bar++){
+    const t = bar * BAR;
+    const ci = bar % 4;
+    const climax = bar >= 36 && bar < 52;   // lattice rupture
+    const inDrums = (bar >= 8 && bar < 28) || (bar >= 36 && bar < 52);
+    const inBass  = (bar >= 6 && bar < 28) || (bar >= 34 && bar < 54) || (bar >= 52 && bar < 60);
+    const inPad   = bar < 8 || (bar >= 20 && bar < 36) || (bar >= 52 && bar < 64);
+    const inArp   = (bar >= 10 && bar < 28) || (bar >= 36 && bar < 52);
+
+    // pads — whole bar
+    if(inPad){
+      const g = (bar < 8) ? .55 : (climax ? 1.1 : .8);
+      pad(t, CHORDS[ci], 4, g);
+    }
+    // bass
+    if(inBass){
+      // offbeat techno bass
+      const pat = climax
+        ? [0,1,1.5,2,3,3.5]
+        : (bar%2===0 ? [0,1.5,2.5] : [0,1,2,3]);
+      for(const st of pat){
+        bass(t + st*SPB, BASSN[ci], climax? .45 : .7, climax? 1.1 : .85);
+      }
+    }
+    // arp 16th
+    if(inArp){
+      const order = [0,2,1,3,1,2,0,3, 0,1,2,3,2,1,0,3];
+      for(let st=0; st<16; st++){
+        // skip some for groove
+        if(!climax && (st===3 || st===11)) continue;
+        let m = ARP[ci][order[st]%4];
+        if(climax && st>=12) m += 12;
+        pluck(t + st*SPB*.25, m, climax? 1.05 : .75);
+      }
+    }
+    // drums
+    if(inDrums){
+      for(let b=0;b<4;b++){
+        kick(t + b*SPB);
+        hat(t + b*SPB + SPB*.5, false, climax? 1 : .75);
+        if(climax) hat(t + b*SPB + SPB*.25, false, .4);
+        if((bar>=16 || climax) && (b===1 || b===3)) snare(t + b*SPB, 1);
+      }
+      if(bar%4===3) hat(t + 3.5*SPB, true, .85);
+    }
+    // sparse half-time kicks in monolith
+    if(bar >= 52 && bar < 60){
+      kick(t);
+      kick(t + 2*SPB);
+      hat(t + SPB, false, .4);
+      hat(t + 3*SPB, false, .4);
+    }
+    // fills into transitions
+    if(bar===7 || bar===15 || bar===27 || bar===35){
+      for(let st=8; st<16; st++) snare(t + st*SPB*.25, .2 + .08*(st-8));
+    }
+    // lead phrases
+    if(bar===16 || bar===44){
+      for(const [bo, note, lb] of PHRASE){
+        if(bo < 8) lead(t + bo*SPB, note, lb, 1);
+      }
+    }
+    if(bar===24 || bar===48){
+      for(const [bo, note, lb] of PHRASE){
+        if(bo >= 8) lead(t + (bo-8)*SPB, note + (bar===48?0:0), lb, bar===48?1.1:.95);
+      }
+    }
+    // soft phrase whisper in breakdown
+    if(bar===30){
+      for(const [bo, note, lb] of PHRASE.slice(0,4))
+        lead(t + bo*SPB, note-12, lb*1.5, .45);
+    }
+
+    if((bar & 7) === 7){
+      onProgress((bar+1)/barCount * .68);
+      await tick();
+    }
+  }
+
+  // risers + impacts on cuts: 14,30,52,68,96,112
+  riser(10, 4, .16);
+  riser(26, 4, .18);
+  riser(48, 4, .12);
+  riser(64, 4, .24);
+  riser(92, 4, .2);
+  for(const b of [14,30,52,68,96]) impact(b);
+  impact(112);
+
+  // ── FX: ping-pong delay + Schroeder reverb + soft clip ──
+  const L = new Float32Array(N), R = new Float32Array(N);
+  const D = Math.round(SPB * .75 * SR); // dotted 8th
+  const dbL = new Float32Array(D), dbR = new Float32Array(D);
+  let dp=0, hL=0, hR=0;
+  const CT = [1557,1617,1491,1422];
+  const cbL = CT.map(x=>new Float32Array(x));
+  const cbR = CT.map(x=>new Float32Array(x+23));
+  const cpL=[0,0,0,0], cpR=[0,0,0,0], cdL=[0,0,0,0], cdR=[0,0,0,0];
+  const AT = [225,556];
+  const abL = AT.map(x=>new Float32Array(x));
+  const abR = AT.map(x=>new Float32Array(x+13));
+  const apL=[0,0], apR=[0,0];
+
+  const CHUNK = Math.ceil(N/8);
+  for(let c=0;c<8;c++){
+    const end = Math.min((c+1)*CHUNK, N);
+    for(let i=c*CHUNK; i<end; i++){
+      // ping-pong with HP in feedback
+      const oL = dbL[dp], oR = dbR[dp];
+      hL += .06*(oL - hL); hR += .06*(oR - hR);
+      dbL[dp] = dlyS[i] + (oR - hR)*.48;
+      dbR[dp] = (oL - hL)*.48;
+      dp++; if(dp>=D) dp=0;
+
+      // reverb: 4 comb + 2 allpass, decorrelated
+      const rin = revS[i] + (oL+oR)*.1;
+      let rL=0, rR=0;
+      for(let k=0;k<4;k++){
+        let b=cbL[k], p=cpL[k], o=b[p];
+        cdL[k]+=.3*(o-cdL[k]); b[p]=rin + cdL[k]*.76;
+        cpL[k]=p+1>=b.length?0:p+1; rL+=o;
+        b=cbR[k]; p=cpR[k]; o=b[p];
+        cdR[k]+=.3*(o-cdR[k]); b[p]=rin + cdR[k]*.76;
+        cpR[k]=p+1>=b.length?0:p+1; rR+=o;
+      }
+      rL*=.25; rR*=.25;
+      for(let k=0;k<2;k++){
+        let b=abL[k], p=apL[k], o=b[p], y=o-.5*rL;
+        b[p]=rL+.5*y; rL=y; apL[k]=p+1>=b.length?0:p+1;
+        b=abR[k]; p=apR[k]; o=b[p]; y=o-.5*rR;
+        b[p]=rR+.5*y; rR=y; apR[k]=p+1>=b.length?0:p+1;
+      }
+
+      const dry = drm[i] + mel[i]*duckC[i];
+      L[i] = Math.tanh((dry + oL*.5 + rL*.48) * 1.1);
+      R[i] = Math.tanh((dry + oR*.5 + rR*.48) * 1.1);
+    }
+    onProgress(.68 + .32*(c+1)/8);
+    await tick();
+  }
+
+  // peak normalize to ~-0.7 dBFS
+  let pk=0;
+  for(let i=0;i<N;i++){
+    const a=Math.abs(L[i]), b=Math.abs(R[i]);
+    if(a>pk) pk=a; if(b>pk) pk=b;
+  }
+  if(pk>0){
+    const k = .92/pk;
+    for(let i=0;i<N;i++){ L[i]*=k; R[i]*=k; }
+  }
+  const buf = new AudioBuffer({ numberOfChannels:2, length:N, sampleRate:SR });
+  buf.copyToChannel(L, 0);
+  buf.copyToChannel(R, 1);
+  onProgress(1);
+  return buf;
+}
+
+/* ════════════════════ conductor ════════════════════ */
+let actx=null, startAt=0, wallStart=0, running=false, ended=false;
+
+function songTime(){
+  if(actx) return actx.currentTime - startAt;
+  return (performance.now() - wallStart)/1000 + DEV_T;
+}
+
+function frame(){
+  if(!running) return;
+  const t = songTime();
+  if(t >= DUR){
+    running=false; ended=true; endCard(); return;
+  }
+  const now = performance.now();
+  if(lastFrameAt > 0) emaMs = emaMs*.9 + (now-lastFrameAt)*.1;
+  lastFrameAt = now;
+  if(t >= 0){
+    draw(Math.max(t,0));
+    overlay(Math.max(t,0));
+  }
+  // adaptive resolution under load
+  if(emaMs > 22 && scale > .45) scale = Math.max(.45, scale*.94);
+  else if(emaMs < 17.5 && scale < 1) scale = Math.min(1, scale*1.015);
+  requestAnimationFrame(frame);
+}
+
+function endCard(){
+  octx.clearRect(0,0,CW,CH);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0,0,W,H);
+  gl.clearColor(0,0,0,1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  octx.textAlign = 'center';
+  const c = glowText('end2', 'RESONANT NULL', 32, '#cfe3ff', 9);
+  drawGlow(c, CW/2, CH*.44, 1, 1);
+  octx.font = '500 13px ui-monospace, Menlo, monospace';
+  octx.fillStyle = 'rgba(150,185,215,.85)';
+  octx.fillText('fin  ·  click to run again', CW/2, CH*.44 + 48);
+}
+
+function startCard(){
+  resize();
+  octx.clearRect(0,0,CW,CH);
+  draw(2.2);
+  const px = Math.min(CW*.08, 78);
+  const c1 = glowText('boot'+px, 'RESONANT NULL', px, '#c8ecff', px*.22);
+  drawGlow(c1, CW/2, CH*.4, 1, 1);
+  const c2 = glowText('bootsub', 'A   G R O K   P R O D U C T I O N', 13, '#8fb0d0', 3);
+  drawGlow(c2, CW/2, CH*.4 + px*.95, .95, 1);
+  octx.textAlign = 'center';
+  octx.font = '500 14px ui-monospace, Menlo, monospace';
+  octx.fillStyle = 'rgba(200,225,250,.95)';
+  octx.fillText('▶  click to launch', CW/2, CH*.72);
+  octx.font = '500 11px ui-monospace, Menlo, monospace';
+  octx.fillStyle = 'rgba(130,160,190,.7)';
+  octx.fillText('120 seconds  ·  sound on  ·  press F for fullscreen', CW/2, CH*.72 + 24);
+}
+
+function precalcCard(p, label){
+  octx.clearRect(0,0,CW,CH);
+  octx.textAlign = 'center';
+  octx.font = '500 13px ui-monospace, Menlo, monospace';
+  octx.fillStyle = 'rgba(190,215,240,.9)';
+  octx.fillText(label, CW/2, CH*.5 - 18);
+  const bw = Math.min(CW*.4, 420), bh=4;
+  const x = CW/2 - bw/2, y = CH*.5 + 4;
+  octx.fillStyle = 'rgba(80,110,140,.4)';
+  octx.fillRect(x,y,bw,bh);
+  octx.fillStyle = 'rgba(140,220,255,.95)';
+  octx.fillRect(x,y,bw*p,bh);
+  octx.fillStyle = 'rgba(120,150,180,.65)';
+  octx.fillText(Math.round(p*100)+'%', CW/2, y+26);
+}
+
+const PRECALC = [
+  'calibrating null oscillators…',
+  'weaving supersaws…',
+  'foreshortening lattice…',
+  'sidechaining the conduit…',
+  'charging plasma sea…',
+  'aligning resonant instrument…'
+];
+
+let started = false;
+async function begin(){
+  if(started) return;
+  started = true;
+  if(DEV_MUTE){
+    wallStart = performance.now();
+    running = true;
+    requestAnimationFrame(frame);
+    return;
+  }
+  console.log('%cRESONANT NULL%c — a grok production',
+    'color:#7fd0ff;font-weight:bold', 'color:#888');
+  precalcCard(0, 'synthesizing soundtrack…');
+  actx = new (window.AudioContext || window.webkitAudioContext)();
+  await actx.resume();
+  const buf = await renderSong(p=>{
+    precalcCard(p, PRECALC[Math.min(Math.floor(p*PRECALC.length), PRECALC.length-1)]);
+  });
+  await new Promise(r=>requestAnimationFrame(r));
+  const src = actx.createBufferSource();
+  src.buffer = buf;
+  src.connect(actx.destination);
+  const offset = clamp(DEV_T, 0, Math.max(0, DUR - 0.05));
+  startAt = actx.currentTime + .12 - offset;
+  src.start(actx.currentTime + .12, offset);
+  running = true;
+  requestAnimationFrame(frame);
+}
+
+const launch = ()=> begin().catch(e => fail('Launch failed:\n'+(e && e.message || e)));
+
+addEventListener('click', ()=>{
+  if(ended){ location.reload(); return; }
+  launch();
+});
+addEventListener('keydown', e=>{
+  if(e.key==='f' || e.key==='F'){
+    if(document.fullscreenElement) document.exitFullscreen();
+    else document.documentElement.requestFullscreen().catch(()=>{});
+  }
+  if(e.key===' ' || e.key==='Enter') launch();
+});
+
+resize();
+if(DEV_MUTE) begin();
+else startCard();
+
+// debug handle
+window.__rn = {
+  get t(){ return running ? songTime() : -1; },
+  get running(){ return running; },
+  get scale(){ return scale; },
+  get fps(){ return 1000/emaMs; },
+  renderSong
+};
+</script>
+</body>
+</html>

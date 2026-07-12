@@ -1,0 +1,2336 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#030408">
+  <title>PALIMPSEST ENGINE — procedural audiovisual demo</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --ink: #030408;
+      --ivory: #f0eadc;
+      --cyan: #72f3ff;
+      --violet: #8b5cff;
+      --amber: #ffad4d;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: var(--ink);
+      color: var(--ivory);
+      font-family: "Arial Narrow", "Helvetica Neue", Arial, sans-serif;
+    }
+
+    body { user-select: none; }
+
+    #gl {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+      background: var(--ink);
+    }
+
+    #capture-frame {
+      position: fixed;
+      inset: 0;
+      z-index: 4;
+      display: none;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+
+    #grain {
+      position: fixed;
+      inset: -40%;
+      pointer-events: none;
+      opacity: .028;
+      background-image:
+        repeating-radial-gradient(circle at 17% 31%, transparent 0, rgba(255,255,255,.35) 1px, transparent 2px, transparent 5px);
+      background-size: 7px 9px;
+      animation: grain-shift .22s steps(2) infinite;
+      mix-blend-mode: screen;
+    }
+
+    @keyframes grain-shift {
+      0% { transform: translate3d(-2%, 1%, 0) rotate(.001deg); }
+      25% { transform: translate3d(1%, -2%, 0) rotate(.001deg); }
+      50% { transform: translate3d(2%, 2%, 0) rotate(.001deg); }
+      75% { transform: translate3d(-1%, -1%, 0) rotate(.001deg); }
+      100% { transform: translate3d(-2%, 1%, 0) rotate(.001deg); }
+    }
+
+    .overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 10;
+    }
+
+    #gate {
+      display: grid;
+      place-items: center;
+      padding: 7vw;
+      background:
+        radial-gradient(circle at 50% 50%, rgba(26, 36, 46, .22), transparent 42%),
+        linear-gradient(180deg, rgba(3,4,8,.38), rgba(3,4,8,.76));
+      transition: opacity 1.4s cubic-bezier(.2,.8,.2,1), visibility 1.4s;
+    }
+
+    #gate.dismissed { opacity: 0; visibility: hidden; pointer-events: none; }
+
+    .gate-inner {
+      width: min(780px, 100%);
+      text-align: center;
+    }
+
+    .eyebrow,
+    .micro {
+      margin: 0;
+      font: 600 10px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      letter-spacing: .34em;
+      text-transform: uppercase;
+      color: rgba(224, 245, 245, .58);
+    }
+
+    h1 {
+      margin: 1.5rem 0 .4rem;
+      font-size: clamp(42px, 9.2vw, 116px);
+      line-height: .79;
+      font-weight: 800;
+      letter-spacing: -.075em;
+      text-transform: uppercase;
+      text-shadow: 0 0 38px rgba(114,243,255,.12);
+    }
+
+    h1 span {
+      display: block;
+      margin-top: .28em;
+      color: transparent;
+      -webkit-text-stroke: 1px rgba(232,247,245,.72);
+      font-weight: 300;
+      letter-spacing: .19em;
+      transform: translateX(.095em);
+    }
+
+    .premise {
+      max-width: 560px;
+      margin: 2rem auto 2.2rem;
+      font-size: clamp(13px, 1.7vw, 17px);
+      line-height: 1.7;
+      letter-spacing: .055em;
+      color: rgba(240,234,220,.68);
+    }
+
+    button {
+      appearance: none;
+      min-width: 238px;
+      border: 1px solid rgba(114,243,255,.54);
+      border-radius: 0;
+      padding: 1.05rem 1.5rem;
+      background: rgba(3,4,8,.58);
+      color: var(--ivory);
+      font: 700 11px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      letter-spacing: .26em;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: color .25s, background .25s, box-shadow .25s, transform .25s;
+    }
+
+    button:hover,
+    button:focus-visible {
+      color: #021014;
+      background: var(--cyan);
+      box-shadow: 0 0 42px rgba(114,243,255,.25);
+      outline: none;
+      transform: translateY(-2px);
+    }
+
+    button:disabled { opacity: .52; cursor: wait; transform: none; }
+
+    #requirements { margin-top: 1.1rem; opacity: .7; }
+
+    #hud {
+      z-index: 5;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 1.2s;
+    }
+
+    #hud.visible { opacity: 1; }
+
+    .corner {
+      position: absolute;
+      top: max(22px, env(safe-area-inset-top));
+      display: flex;
+      gap: .8rem;
+      align-items: center;
+    }
+
+    .corner.left { left: max(24px, env(safe-area-inset-left)); }
+    .corner.right { right: max(24px, env(safe-area-inset-right)); }
+
+    .sigil {
+      width: 18px;
+      height: 18px;
+      border: 1px solid rgba(114,243,255,.68);
+      border-radius: 50%;
+      position: relative;
+      box-shadow: 0 0 14px rgba(114,243,255,.25);
+    }
+
+    .sigil::before,
+    .sigil::after {
+      content: "";
+      position: absolute;
+      left: 50%; top: 50%;
+      width: 24px; height: 1px;
+      background: rgba(240,234,220,.64);
+      transform: translate(-50%,-50%) rotate(32deg);
+    }
+
+    .sigil::after { transform: translate(-50%,-50%) rotate(-32deg); }
+
+    #progress-track {
+      position: absolute;
+      left: max(24px, env(safe-area-inset-left));
+      right: max(24px, env(safe-area-inset-right));
+      bottom: max(19px, env(safe-area-inset-bottom));
+      height: 1px;
+      background: rgba(240,234,220,.13);
+    }
+
+    #progress {
+      width: 0;
+      height: 1px;
+      background: linear-gradient(90deg, var(--cyan), var(--violet), var(--amber));
+      box-shadow: 0 0 10px rgba(114,243,255,.65);
+      transform-origin: left;
+    }
+
+    #scene-card {
+      position: absolute;
+      left: 50%;
+      bottom: 9vh;
+      width: min(700px, 86vw);
+      transform: translate(-50%, 18px);
+      text-align: center;
+      opacity: 0;
+      transition: opacity .75s, transform .75s cubic-bezier(.2,.9,.2,1);
+    }
+
+    #scene-card.reveal { opacity: 1; transform: translate(-50%, 0); }
+
+    #scene-title {
+      margin: .65rem 0 0;
+      font-size: clamp(23px, 4vw, 52px);
+      line-height: 1;
+      font-weight: 200;
+      letter-spacing: .18em;
+      text-transform: uppercase;
+      text-shadow: 0 0 30px rgba(114,243,255,.26);
+    }
+
+    #diagnostics {
+      position: absolute;
+      top: 64px;
+      right: max(24px, env(safe-area-inset-right));
+      display: none;
+      min-width: 180px;
+      padding: .8rem;
+      border: 1px solid rgba(114,243,255,.2);
+      background: rgba(3,4,8,.72);
+      white-space: pre;
+      font: 10px/1.65 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      color: rgba(224,245,245,.72);
+    }
+
+    #diagnostics.visible { display: block; }
+
+    #finale {
+      z-index: 8;
+      display: grid;
+      place-items: center;
+      pointer-events: none;
+      opacity: 0;
+      visibility: hidden;
+      background: rgba(3,4,8,.12);
+      transition: opacity 2.4s, visibility 2.4s;
+    }
+
+    #finale.visible { opacity: 1; visibility: visible; pointer-events: auto; }
+
+    .final-inner { text-align: center; }
+    .final-inner h2 {
+      margin: .7rem 0 2.5rem;
+      font-size: clamp(34px, 7vw, 90px);
+      line-height: .9;
+      letter-spacing: -.04em;
+      text-transform: uppercase;
+    }
+
+    #error-panel {
+      z-index: 20;
+      display: none;
+      place-items: center;
+      padding: 8vw;
+      background: rgba(3,4,8,.96);
+    }
+
+    #error-panel.visible { display: grid; }
+    .error-inner { width: min(760px, 100%); }
+    .error-inner h2 { color: #ff6d78; letter-spacing: .12em; }
+    #error-message {
+      overflow: auto;
+      max-height: 50vh;
+      padding: 1rem;
+      border-left: 2px solid #ff6d78;
+      background: rgba(255,109,120,.06);
+      white-space: pre-wrap;
+      user-select: text;
+      font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    @media (max-width: 640px) {
+      .corner.right { display: none; }
+      .premise { max-width: 92%; }
+      #scene-card { bottom: 11vh; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      #grain { animation: none; }
+    }
+
+    body.capture-mode *,
+    body.capture-mode *::before,
+    body.capture-mode *::after {
+      animation: none !important;
+      transition: none !important;
+    }
+
+    body.capture-mode #grain { display: none; }
+  </style>
+</head>
+<body>
+  <canvas id="gl" aria-label="Procedural real-time graphics"></canvas>
+  <canvas id="capture-frame" aria-hidden="true"></canvas>
+  <div id="grain" aria-hidden="true"></div>
+
+  <main id="gate" class="overlay">
+    <div class="gate-inner">
+      <p class="eyebrow">A real-time procedural audiovisual work</p>
+      <h1>Palimpsest <span>Engine</span></h1>
+      <p class="premise">A machine reconstructs a vanished cathedral from one corrupted memory glyph. Every image and every sound is synthesized live by this single document.</p>
+      <button id="start" type="button">Begin transmission</button>
+      <p id="requirements" class="micro">WebGL2 · Web Audio · headphones recommended</p>
+    </div>
+  </main>
+
+  <aside id="hud" class="overlay" aria-hidden="true">
+    <div class="corner left"><span class="sigil"></span><span id="scene-index" class="micro">MEMORY 00 / 08</span></div>
+    <div class="corner right"><span id="transport" class="micro">BAR 001 · 132 BPM</span><span id="state-label" class="micro">LIVE</span></div>
+    <div id="scene-card"><p id="scene-kicker" class="eyebrow">ARCHIVE NODE 00</p><p id="scene-title">Cold Read</p></div>
+    <div id="diagnostics"></div>
+    <div id="progress-track"><div id="progress"></div></div>
+  </aside>
+
+  <section id="finale" class="overlay">
+    <div class="final-inner">
+      <p class="eyebrow">The proof was the erasure</p>
+      <h2>Palimpsest Engine</h2>
+      <button id="replay" type="button">Reconstruct again</button>
+    </div>
+  </section>
+
+  <section id="error-panel" class="overlay" role="alert">
+    <div class="error-inner">
+      <p class="eyebrow">Transmission terminated</p>
+      <h2>THE MACHINE REFUSED TO LIE</h2>
+      <pre id="error-message"></pre>
+      <button id="reload" type="button">Reload engine</button>
+    </div>
+  </section>
+
+  <script>
+  "use strict";
+  (() => {
+    const BPM = 132;
+    const BEAT_SECONDS = 60 / BPM;
+    const BAR_SECONDS = BEAT_SECONDS * 4;
+    const TICK_SECONDS = BEAT_SECONDS / 4;
+    const TOTAL_BARS = 112;
+    const TOTAL_TICKS = TOTAL_BARS * 16;
+    const DURATION = TOTAL_BARS * BAR_SECONDS;
+    const TAU = Math.PI * 2;
+
+    const SCENES = Object.freeze([
+      Object.freeze({ start: 0,   end: 8,   title: "Cold Read",          kicker: "Archive node 00" }),
+      Object.freeze({ start: 8,   end: 24,  title: "Ink Geometry",       kicker: "Extrusion protocol" }),
+      Object.freeze({ start: 24,  end: 40,  title: "The Nave",           kicker: "Reconstructed volume" }),
+      Object.freeze({ start: 40,  end: 52,  title: "Choir of Measures",  kicker: "Seven witnesses" }),
+      Object.freeze({ start: 52,  end: 68,  title: "Inside the Error",   kicker: "Non-euclidean fault" }),
+      Object.freeze({ start: 68,  end: 88,  title: "Rewrite Storm",      kicker: "Memory pressure critical" }),
+      Object.freeze({ start: 88,  end: 104, title: "Memory Shear",       kicker: "The structure forgets" }),
+      Object.freeze({ start: 104, end: 112, title: "Proof / Erasure",    kicker: "Final reconstruction" })
+    ]);
+
+    const IMPACT_BARS = Object.freeze([8, 16, 32, 56, 80, 96, 104]);
+    const LEAD_NOTES = Object.freeze([74, 75, 69, 70, 67, 65, 63, 69, 74, 73, 74, 77, 76, 75, 73, 69]);
+    const CHORDS = Object.freeze([
+      Object.freeze([50, 57, 62, 64]),
+      Object.freeze([46, 53, 57, 62]),
+      Object.freeze([43, 50, 58, 60]),
+      Object.freeze([45, 52, 55, 61])
+    ]);
+
+    function mustElement(id) {
+      const element = document.getElementById(id);
+      if (element === null) {
+        throw new Error("Required DOM element #" + id + " is missing.");
+      }
+      return element;
+    }
+
+    const ui = Object.freeze({
+      canvas: mustElement("gl"),
+      captureFrame: mustElement("capture-frame"),
+      gate: mustElement("gate"),
+      start: mustElement("start"),
+      requirements: mustElement("requirements"),
+      hud: mustElement("hud"),
+      sceneIndex: mustElement("scene-index"),
+      transport: mustElement("transport"),
+      stateLabel: mustElement("state-label"),
+      sceneCard: mustElement("scene-card"),
+      sceneKicker: mustElement("scene-kicker"),
+      sceneTitle: mustElement("scene-title"),
+      diagnostics: mustElement("diagnostics"),
+      progress: mustElement("progress"),
+      finale: mustElement("finale"),
+      replay: mustElement("replay"),
+      errorPanel: mustElement("error-panel"),
+      errorMessage: mustElement("error-message"),
+      reload: mustElement("reload")
+    });
+
+    const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
+    const fract = value => value - Math.floor(value);
+    const smoothstep = (edge0, edge1, value) => {
+      const x = clamp((value - edge0) / (edge1 - edge0), 0, 1);
+      return x * x * (3 - 2 * x);
+    };
+    const midiToHz = note => 440 * (2 ** ((note - 69) / 12));
+
+    const VERTEX_SHADER = `#version 300 es
+precision highp float;
+out vec2 v_uv;
+void main() {
+  vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
+  v_uv = p;
+  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}`;
+
+    const SCENE_SHADER = `#version 300 es
+precision highp float;
+precision highp int;
+
+in vec2 v_uv;
+out vec4 frag_color;
+
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform float u_local;
+uniform float u_transition;
+uniform int u_scene;
+uniform vec4 u_audio;
+uniform vec4 u_meta;
+
+#define PI 3.14159265359
+#define TAU 6.28318530718
+
+mat2 rot(float a) {
+  float c = cos(a), s = sin(a);
+  return mat2(c, -s, s, c);
+}
+
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+
+vec3 hash33(vec3 p3) {
+  p3 = fract(p3 * vec3(0.1031, 0.1030, 0.0973));
+  p3 += dot(p3, p3.yxz + 19.19);
+  return fract((p3.xxy + p3.yxx) * p3.zyx);
+}
+
+float noise3(vec3 p) {
+  vec3 i = floor(p);
+  vec3 f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  float n000 = hash12(i.xy + i.z * 17.0);
+  float n100 = hash12(i.xy + vec2(1.0, 0.0) + i.z * 17.0);
+  float n010 = hash12(i.xy + vec2(0.0, 1.0) + i.z * 17.0);
+  float n110 = hash12(i.xy + vec2(1.0) + i.z * 17.0);
+  float n001 = hash12(i.xy + (i.z + 1.0) * 17.0);
+  float n101 = hash12(i.xy + vec2(1.0, 0.0) + (i.z + 1.0) * 17.0);
+  float n011 = hash12(i.xy + vec2(0.0, 1.0) + (i.z + 1.0) * 17.0);
+  float n111 = hash12(i.xy + vec2(1.0) + (i.z + 1.0) * 17.0);
+  return mix(mix(mix(n000, n100, f.x), mix(n010, n110, f.x), f.y),
+             mix(mix(n001, n101, f.x), mix(n011, n111, f.x), f.y), f.z);
+}
+
+float fbm(vec3 p) {
+  float value = 0.0;
+  float amplitude = 0.5;
+  for (int i = 0; i < 4; i++) {
+    value += noise3(p) * amplitude;
+    p = p * 2.03 + vec3(4.1, 7.3, 2.8);
+    amplitude *= 0.5;
+  }
+  return value;
+}
+
+float sd_sphere(vec3 p, float r) { return length(p) - r; }
+
+float sd_box(vec3 p, vec3 b) {
+  vec3 q = abs(p) - b;
+  return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0);
+}
+
+float sd_round_box(vec3 p, vec3 b, float r) {
+  vec3 q = abs(p) - b + r;
+  return min(max(q.x, max(q.y, q.z)), 0.0) + length(max(q, 0.0)) - r;
+}
+
+float sd_torus_y(vec3 p, vec2 t) {
+  return length(vec2(length(p.xz) - t.x, p.y)) - t.y;
+}
+
+float sd_torus_z(vec3 p, vec2 t) {
+  return length(vec2(length(p.xy) - t.x, p.z)) - t.y;
+}
+
+vec2 op_union(vec2 a, vec2 b) { return a.x < b.x ? a : b; }
+
+vec2 map_glyph(vec3 p, float scale) {
+  p /= scale;
+  vec2 result = vec2(sd_sphere(p, 0.92), 1.0);
+  vec3 q = p;
+  q.xz = rot(0.42 + u_time * 0.045) * q.xz;
+  float r0 = sd_torus_y(q, vec2(1.43, 0.045));
+  q.xy = rot(1.08) * q.xy;
+  float r1 = sd_torus_y(q, vec2(1.43, 0.042));
+  q.yz = rot(1.2) * q.yz;
+  float r2 = sd_torus_z(q, vec2(1.43, 0.038));
+  float rings = min(r0, min(r1, r2));
+  result = op_union(result, vec2(rings, 3.0));
+  vec3 filament = p;
+  filament.xy = rot(-0.55) * filament.xy;
+  float axis = sd_round_box(filament, vec3(0.035, 1.68, 0.035), 0.025);
+  result = op_union(result, vec2(axis, 3.0));
+  result.x *= scale;
+  return result;
+}
+
+vec2 map_ribbons(vec3 p) {
+  vec2 result = vec2(1000.0, 0.0);
+  float angle = atan(p.z, p.x);
+  float radial = length(p.xz);
+  for (int i = 0; i < 3; i++) {
+    float fi = float(i);
+    float phase = mod(angle - p.y * 0.54 - fi * TAU / 3.0 + PI, TAU) - PI;
+    float radius = 1.58 + 0.13 * sin(p.y * 0.78 + fi * 2.1 + u_time * 0.28);
+    float strand = length(vec2(radial - radius, phase * radius * 0.48));
+    strand -= 0.072 + 0.018 * u_audio.w;
+    strand = max(strand, abs(p.y) - 3.25);
+    result = op_union(result, vec2(strand, i == 0 ? 3.0 : 2.0));
+  }
+  float seed = sd_sphere(p + vec3(0.0, 0.25 * sin(u_time * 0.2), 0.0), 0.76);
+  result = op_union(result, vec2(seed, 1.0));
+  return result;
+}
+
+vec2 map_cathedral(vec3 p) {
+  float cell_z = mod(p.z + 2.5, 5.0) - 2.5;
+  vec3 q = vec3(p.x, p.y, cell_z);
+  vec2 result = vec2(p.y + 1.62, 4.0);
+  float pillar = length(vec2(abs(q.x) - 3.15, q.z)) - 0.18;
+  pillar = max(pillar, abs(q.y - 0.55) - 2.22);
+  result = op_union(result, vec2(pillar, 2.0));
+  float arch = abs(length(q.xy - vec2(0.0, 1.16)) - 3.18) - 0.125;
+  arch = max(arch, abs(q.z) - 0.13);
+  result = op_union(result, vec2(arch, 2.0));
+  vec3 rib_q = q;
+  rib_q.x = abs(rib_q.x) - 3.58;
+  float outer_rib = sd_box(rib_q, vec3(0.08, 3.2, 0.10));
+  result = op_union(result, vec2(outer_rib, 2.0));
+  float rail = length(vec2(abs(p.x) - 1.55, p.y + 1.48)) - 0.055;
+  result = op_union(result, vec2(rail, 3.0));
+  return result;
+}
+
+vec2 map_monoliths(vec3 p) {
+  vec2 result = map_glyph(p * 0.74, 0.9);
+  float angle = atan(p.z, p.x);
+  float sector = TAU / 7.0;
+  float cell = floor((angle + sector * 0.5) / sector);
+  vec3 q = p;
+  q.xz = rot(-cell * sector) * q.xz;
+  q.x -= 4.05 + 0.18 * sin(u_time * 0.45 + cell);
+  q.y -= 0.18 * sin(u_time * 0.31 + cell * 1.7);
+  q.yz = rot(0.1 * sin(u_time * 0.2 + cell)) * q.yz;
+  float slab = sd_round_box(q, vec3(0.48, 2.45, 0.82), 0.09);
+  float cut = sd_box(q - vec3(0.0, 0.15, 0.75), vec3(0.17, 1.28, 0.2));
+  slab = max(slab, -cut);
+  result = op_union(result, vec2(slab, 2.0));
+  float orbit = sd_torus_y(p, vec2(4.05, 0.028));
+  result = op_union(result, vec2(orbit, 3.0));
+  return result;
+}
+
+vec2 map_error(vec3 p) {
+  float radius = length(p);
+  vec3 inv = p / (0.16 + dot(p, p) * 0.18);
+  inv.xy = rot(u_time * 0.08) * inv.xy;
+  float gyroid = abs(dot(sin(inv * 3.0), cos(inv.yzx * 3.0))) / 4.6 - 0.035;
+  gyroid = max(gyroid, abs(radius - 3.05) - 0.65);
+  vec2 result = vec2(gyroid, 2.0);
+  float black_sun = sd_sphere(p, 0.83 + 0.06 * u_audio.x);
+  result = op_union(result, vec2(black_sun, 1.0));
+  float horizon = sd_torus_y(p, vec2(2.12, 0.028 + 0.018 * u_audio.z));
+  result = op_union(result, vec2(horizon, 3.0));
+  return result;
+}
+
+vec2 map_storm(vec3 p) {
+  vec3 q = p;
+  q.z = mod(q.z + 3.0, 6.0) - 3.0;
+  float scale = 1.0;
+  for (int i = 0; i < 5; i++) {
+    q = abs(q) - vec3(1.15, 0.88, 1.05);
+    q.xy = rot(0.58 + 0.08 * sin(u_time * 0.24)) * q.xy;
+    q.yz = rot(-0.41) * q.yz;
+    q *= 1.34;
+    scale *= 1.34;
+  }
+  float lattice = sd_round_box(q, vec3(0.22, 1.16, 0.22), 0.055) / scale;
+  vec2 result = vec2(lattice, 2.0);
+  float tunnel = abs(length(p.xy) - 3.3) - 0.055;
+  tunnel += 0.035 * sin(atan(p.y, p.x) * 12.0 + p.z * 1.7 - u_time * 2.0);
+  result = op_union(result, vec2(tunnel, 3.0));
+  return result;
+}
+
+vec2 map_shear(vec3 p) {
+  const float cell_size = 0.78;
+  vec3 id = floor((p + cell_size * 0.5) / cell_size);
+  vec3 q = mod(p + cell_size * 0.5, cell_size) - cell_size * 0.5;
+  vec3 random_offset = (hash33(id) - 0.5) * 0.43;
+  q -= random_offset;
+  float stratum = sin(id.x * 0.73 + id.z * 0.31 + u_time * 0.4);
+  q.y += stratum * 0.15;
+  float particle = length(q) - (0.035 + 0.052 * hash12(id.xy + id.z));
+  vec2 result = vec2(particle, hash12(id.xz) > 0.78 ? 3.0 : 2.0);
+  vec3 core_p = p - vec3(0.0, 0.0, -7.0);
+  result = op_union(result, map_glyph(core_p, 1.65));
+  return result;
+}
+
+vec2 map_world(vec3 p) {
+  if (u_scene == 0) return map_glyph(p, 1.0);
+  if (u_scene == 1) return map_ribbons(p);
+  if (u_scene == 2) return map_cathedral(p);
+  if (u_scene == 3) return map_monoliths(p);
+  if (u_scene == 4) return map_error(p);
+  if (u_scene == 5) return map_storm(p);
+  if (u_scene == 6) return map_shear(p);
+  return map_glyph(p, 1.0 + 0.035 * u_local);
+}
+
+vec3 scene_normal(vec3 p) {
+  const vec2 e = vec2(0.0018, -0.0018);
+  return normalize(
+    e.xyy * map_world(p + e.xyy).x +
+    e.yyx * map_world(p + e.yyx).x +
+    e.yxy * map_world(p + e.yxy).x +
+    e.xxx * map_world(p + e.xxx).x
+  );
+}
+
+float ambient_occlusion(vec3 p, vec3 n) {
+  float occlusion = 0.0;
+  float weight = 1.0;
+  for (int i = 1; i <= 3; i++) {
+    float h = 0.075 * float(i);
+    float d = map_world(p + n * h).x;
+    occlusion += (h - d) * weight;
+    weight *= 0.55;
+  }
+  return clamp(1.0 - occlusion * 2.1, 0.0, 1.0);
+}
+
+float soft_shadow(vec3 ro, vec3 rd) {
+  float shade = 1.0;
+  float travel = 0.06;
+  for (int i = 0; i < 12; i++) {
+    float h = map_world(ro + rd * travel).x;
+    shade = min(shade, 13.0 * h / travel);
+    travel += clamp(h, 0.025, 0.48);
+    if (travel > 8.0) break;
+  }
+  return clamp(shade, 0.18, 1.0);
+}
+
+void camera_path(out vec3 ro, out vec3 target, out float roll) {
+  float t = u_local;
+  roll = 0.018 * sin(u_time * 0.27) + 0.022 * u_audio.y;
+  if (u_scene == 0) {
+    ro = vec3(0.35 * sin(t * 0.12), 0.22 * cos(t * 0.09), 6.6 - 0.025 * t);
+    target = vec3(0.0);
+  } else if (u_scene == 1) {
+    ro = vec3(4.85 * sin(t * 0.12), 0.55 * sin(t * 0.08), 4.85 * cos(t * 0.12));
+    target = vec3(0.0, 0.28 * sin(t * 0.16), 0.0);
+    roll += 0.035 * sin(t * 0.14);
+  } else if (u_scene == 2) {
+    ro = vec3(0.42 * sin(t * 0.31), 0.05 + 0.17 * sin(t * 0.17), 4.0 - t * (1.42 + 0.16 * u_audio.x));
+    target = ro + vec3(0.0, 0.18, -5.5);
+    roll += 0.012 * sin(t * 0.4);
+  } else if (u_scene == 3) {
+    ro = vec3(7.7 * sin(t * 0.115), 2.0 + 0.7 * sin(t * 0.19), 7.7 * cos(t * 0.115));
+    target = vec3(0.0, 0.15, 0.0);
+    roll += smoothstep(4.0, 14.0, t) * 0.14;
+  } else if (u_scene == 4) {
+    ro = vec3(0.65 * sin(t * 0.23), 0.5 * cos(t * 0.17), 6.4 - t * 0.13);
+    target = vec3(0.0, 0.0, 0.0);
+    roll += 0.24 * sin(t * 0.085);
+  } else if (u_scene == 5) {
+    ro = vec3(0.55 * sin(t * 0.42), 0.45 * cos(t * 0.31), 3.5 - t * (1.65 + u_meta.x * 0.32));
+    target = ro + vec3(0.0, 0.0, -6.0);
+    roll += 0.11 * sin(t * 0.21);
+  } else if (u_scene == 6) {
+    ro = vec3(0.55 * sin(t * 0.19), 0.35 * sin(t * 0.13), 5.0 - t * 1.32);
+    target = ro + vec3(0.0, 0.03 * sin(t), -5.0);
+    roll += 0.055 * sin(t * 0.18);
+  } else {
+    ro = vec3(0.5 * sin(t * 0.11), 0.3 * cos(t * 0.09), 8.4 - min(t * 0.12, 1.5));
+    target = vec3(0.0);
+    roll *= 0.2;
+  }
+}
+
+mat3 camera_matrix(vec3 ro, vec3 target, float roll) {
+  vec3 forward = normalize(target - ro);
+  vec3 right = normalize(cross(forward, vec3(sin(roll), cos(roll), 0.0)));
+  vec3 up = cross(right, forward);
+  return mat3(right, up, forward);
+}
+
+vec3 background(vec3 rd) {
+  float horizon = pow(max(0.0, 1.0 - abs(rd.y)), 7.0);
+  vec3 ink = vec3(0.0025, 0.004, 0.008);
+  vec3 color = ink + vec3(0.012, 0.025, 0.035) * horizon;
+  vec2 star_uv = rd.xy / max(0.12, abs(rd.z));
+  vec2 star_cell = floor(star_uv * 270.0);
+  float star = smoothstep(0.9978, 1.0, hash12(star_cell));
+  star *= smoothstep(0.0, 0.6, abs(rd.z));
+  star *= 0.74 + 0.26 * cos(u_meta.z * TAU + hash12(star_cell) * TAU);
+  color += star * vec3(0.52, 0.78, 0.88);
+  float haze = fbm(rd * 3.2 + vec3(0.0, 0.0, u_time * 0.018));
+  color += vec3(0.016, 0.006, 0.032) * smoothstep(0.55, 0.95, haze);
+  if (u_scene == 4) {
+    color = vec3(0.38, 0.37, 0.34) + vec3(0.14, 0.12, 0.10) * horizon;
+    color -= star * 0.22;
+  }
+  return color;
+}
+
+void main() {
+  vec2 pixel = (gl_FragCoord.xy * 2.0 - u_resolution.xy) / u_resolution.y;
+  float lens_pulse = 1.0 - 0.018 * u_audio.x + 0.012 * u_audio.y + 0.025 * u_meta.y;
+  pixel *= lens_pulse;
+
+  vec3 ro, target;
+  float roll;
+  camera_path(ro, target, roll);
+  vec3 rd = camera_matrix(ro, target, roll) * normalize(vec3(pixel, 1.72));
+
+  float travel = 0.0;
+  float material = 0.0;
+  float glow = 0.0;
+  bool hit = false;
+  vec3 p = ro;
+  for (int i = 0; i < 78; i++) {
+    p = ro + rd * travel;
+    vec2 sample_info = map_world(p);
+    float distance_to_surface = sample_info.x;
+    float emissive_nearness = exp(-18.0 * abs(distance_to_surface));
+    glow += emissive_nearness * (sample_info.y > 2.5 ? 0.008 : 0.0015);
+    if (distance_to_surface < 0.0015 * (1.0 + travel * 0.035)) {
+      hit = true;
+      material = sample_info.y;
+      break;
+    }
+    travel += max(distance_to_surface * 0.68, 0.003);
+    if (travel > 62.0) break;
+  }
+
+  vec3 color = background(rd);
+  if (hit) {
+    vec3 normal = scene_normal(p);
+    vec3 light_direction = normalize(vec3(-0.55, 0.72, 0.38));
+    vec3 half_vector = normalize(light_direction - rd);
+    float diffuse = max(dot(normal, light_direction), 0.0);
+    float rim = pow(1.0 - max(dot(normal, -rd), 0.0), 3.2);
+    float specular = pow(max(dot(normal, half_vector), 0.0), material > 2.5 ? 90.0 : 36.0);
+    float ao = ambient_occlusion(p, normal);
+    float shadow = soft_shadow(p + normal * 0.015, light_direction);
+
+    vec3 albedo = vec3(0.025, 0.034, 0.041);
+    if (material > 1.5) albedo = vec3(0.42, 0.38, 0.31);
+    if (material > 2.5) albedo = vec3(0.08, 0.72, 0.88);
+    if (material > 3.5) albedo = vec3(0.12, 0.13, 0.13);
+
+    float phase_noise = noise3(p * 1.7 + vec3(0.0, -u_time * 0.15, 0.0));
+    float contour = abs(sin((p.y + p.x * 0.19 + p.z * 0.07) * 18.0 - u_time * 1.7 + phase_noise * 3.0 + u_meta.w * TAU));
+    float etched_line = smoothstep(0.965, 0.999, contour);
+    vec3 memory_color = mix(vec3(0.17, 0.84, 0.92), vec3(0.56, 0.18, 1.0), 0.5 + 0.5 * sin(p.z * 0.09 + u_time * 0.13));
+    if (u_scene == 5) {
+      memory_color = mix(memory_color, vec3(1.0, 0.38, 0.055), smoothstep(0.38, 0.9, u_meta.x));
+    }
+
+    color = albedo * (0.08 + diffuse * shadow * 0.92) * ao;
+    color += vec3(0.34, 0.48, 0.55) * rim * (0.25 + 0.75 * ao);
+    color += specular * vec3(0.75, 0.9, 1.0) * shadow;
+    color += memory_color * etched_line * (0.4 + 1.9 * u_meta.x);
+    if (material > 2.5 && material < 3.5) {
+      color += memory_color * (1.4 + 2.2 * u_audio.z + 1.5 * u_meta.y);
+    }
+    if (u_scene == 4) {
+      color = mix(vec3(0.018, 0.012, 0.032), vec3(0.50, 0.46, 0.40) - color * 0.5, material > 1.5 ? 0.82 : 0.15);
+      color += vec3(0.35, 0.03, 0.55) * etched_line;
+    }
+
+    float fog = 1.0 - exp(-travel * (u_scene == 2 || u_scene == 5 ? 0.032 : 0.018));
+    color = mix(color, background(rd), fog);
+  }
+
+  vec3 glow_color = u_scene == 5 ? vec3(1.0, 0.23, 0.04) : vec3(0.08, 0.72, 1.0);
+  color += glow_color * min(glow, 1.8) * (1.2 + u_meta.x);
+
+  float radial = length(pixel);
+  float singularity = exp(-10.0 * abs(radial - (0.31 + 0.018 * sin(u_time * 0.7))));
+  if (u_scene == 4 || u_scene == 7) {
+    color += glow_color * singularity * (0.08 + 0.15 * u_meta.y);
+  }
+
+  color *= mix(0.08, 1.0, u_transition);
+  color += vec3(0.55, 0.72, 1.0) * u_meta.y * 0.16;
+  frag_color = vec4(max(color, 0.0), 1.0);
+}`;
+
+    const BLUR_SHADER = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+out vec4 frag_color;
+uniform sampler2D u_source;
+uniform vec2 u_texel;
+uniform vec2 u_direction;
+uniform int u_extract;
+
+vec3 source_color(vec2 uv) {
+  vec3 color = texture(u_source, uv).rgb;
+  if (u_extract == 1) {
+    float brightness = max(color.r, max(color.g, color.b));
+    color *= smoothstep(0.34, 1.25, brightness);
+  }
+  return color;
+}
+
+void main() {
+  vec2 offset = u_texel * u_direction;
+  vec3 color = source_color(v_uv) * 0.227027;
+  color += source_color(v_uv + offset * 1.384615) * 0.316216;
+  color += source_color(v_uv - offset * 1.384615) * 0.316216;
+  color += source_color(v_uv + offset * 3.230769) * 0.070270;
+  color += source_color(v_uv - offset * 3.230769) * 0.070270;
+  frag_color = vec4(color, 1.0);
+}`;
+
+    const COMPOSITE_SHADER = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+out vec4 frag_color;
+uniform sampler2D u_scene_tex;
+uniform sampler2D u_bloom_tex;
+uniform sampler2D u_history_tex;
+uniform float u_feedback;
+uniform float u_flash;
+
+vec3 aces(vec3 x) {
+  const float a = 2.51;
+  const float b = 0.03;
+  const float c = 2.43;
+  const float d = 0.59;
+  const float e = 0.14;
+  return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
+
+void main() {
+  vec2 center = v_uv - 0.5;
+  float aberration = (0.00035 + u_flash * 0.0032) * (0.35 + length(center));
+  vec2 direction = normalize(center + vec2(0.00001));
+  vec3 scene_color;
+  scene_color.r = texture(u_scene_tex, v_uv + direction * aberration).r;
+  scene_color.g = texture(u_scene_tex, v_uv).g;
+  scene_color.b = texture(u_scene_tex, v_uv - direction * aberration).b;
+  vec3 bloom = texture(u_bloom_tex, v_uv).rgb;
+  vec3 current = aces(scene_color * 0.84 + bloom * (0.46 + u_flash * 0.42));
+
+  vec2 history_uv = center * (0.997 - 0.0025 * u_flash) + 0.5;
+  vec3 history = texture(u_history_tex, history_uv).rgb;
+  current = mix(current, max(current, history * 0.965), u_feedback);
+
+  float vignette = 1.0 - smoothstep(0.28, 0.82, dot(center, center));
+  current *= 0.72 + 0.28 * vignette;
+  current += vec3(0.78, 0.88, 1.0) * u_flash * 0.34;
+  frag_color = vec4(current, 1.0);
+}`;
+
+    const PRESENT_SHADER = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+out vec4 frag_color;
+uniform sampler2D u_source;
+void main() {
+  vec3 color = texture(u_source, v_uv).rgb;
+  color = pow(max(color, 0.0), vec3(0.4545));
+  float scan = sin(gl_FragCoord.y * 1.45) * 0.006;
+  color -= scan;
+  frag_color = vec4(color, 1.0);
+}`;
+
+    function numberedSource(source) {
+      return source.split("\n").map((line, index) => {
+        return String(index + 1).padStart(4, " ") + " | " + line;
+      }).join("\n");
+    }
+
+    function compileShader(gl, type, source, label) {
+      const shader = gl.createShader(type);
+      if (shader === null) {
+        throw new Error("WebGL failed to allocate the " + label + " shader.");
+      }
+      gl.shaderSource(shader, source);
+      gl.compileShader(shader);
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        const log = gl.getShaderInfoLog(shader);
+        gl.deleteShader(shader);
+        throw new Error(label + " shader compilation failed:\n" + String(log) + "\n\n" + numberedSource(source));
+      }
+      return shader;
+    }
+
+    function createProgram(gl, fragmentSource, label) {
+      const vertexShader = compileShader(gl, gl.VERTEX_SHADER, VERTEX_SHADER, label + " vertex");
+      const fragmentShader = compileShader(gl, gl.FRAGMENT_SHADER, fragmentSource, label + " fragment");
+      const program = gl.createProgram();
+      if (program === null) {
+        gl.deleteShader(vertexShader);
+        gl.deleteShader(fragmentShader);
+        throw new Error("WebGL failed to allocate the " + label + " program.");
+      }
+      gl.attachShader(program, vertexShader);
+      gl.attachShader(program, fragmentShader);
+      gl.linkProgram(program);
+      gl.deleteShader(vertexShader);
+      gl.deleteShader(fragmentShader);
+      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+        const log = gl.getProgramInfoLog(program);
+        gl.deleteProgram(program);
+        throw new Error(label + " program link failed:\n" + String(log));
+      }
+      return program;
+    }
+
+    function mustUniform(gl, program, name) {
+      const location = gl.getUniformLocation(program, name);
+      if (location === null) {
+        throw new Error("Required shader uniform " + name + " was optimized out or not linked.");
+      }
+      return location;
+    }
+
+    function assertNoGlError(gl, label) {
+      const error = gl.getError();
+      if (error !== gl.NO_ERROR) {
+        throw new Error("WebGL error 0x" + error.toString(16) + " after " + label + ".");
+      }
+    }
+
+    function createTarget(gl, width, height, label, format) {
+      const texture = gl.createTexture();
+      const framebuffer = gl.createFramebuffer();
+      if (texture === null || framebuffer === null) {
+        if (texture !== null) gl.deleteTexture(texture);
+        if (framebuffer !== null) gl.deleteFramebuffer(framebuffer);
+        throw new Error("WebGL failed to allocate render target " + label + ".");
+      }
+
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texImage2D(gl.TEXTURE_2D, 0, format.internalFormat, width, height, 0, gl.RGBA, format.type, null);
+
+      gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+      const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+      if (status !== gl.FRAMEBUFFER_COMPLETE) {
+        gl.deleteTexture(texture);
+        gl.deleteFramebuffer(framebuffer);
+        throw new Error("Render target " + label + " is incomplete (status " + status + ").");
+      }
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      return Object.freeze({ texture, framebuffer, width, height, label, format: format.name });
+    }
+
+    function deleteTarget(gl, target) {
+      gl.deleteTexture(target.texture);
+      gl.deleteFramebuffer(target.framebuffer);
+    }
+
+    function bindTexture(gl, texture, unit) {
+      gl.activeTexture(gl.TEXTURE0 + unit);
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+    }
+
+    function createRenderer(canvas, initialRenderScale, adaptiveScaling, preserveOutput) {
+      if (!Number.isFinite(initialRenderScale) || initialRenderScale < 0.25 || initialRenderScale > 1) {
+        throw new Error("Initial render scale must be finite and within [0.25, 1].");
+      }
+      if (typeof adaptiveScaling !== "boolean") {
+        throw new Error("Adaptive-scaling configuration must be boolean.");
+      }
+      if (typeof preserveOutput !== "boolean") {
+        throw new Error("Output-preservation configuration must be boolean.");
+      }
+      const options = {
+        alpha: false,
+        antialias: false,
+        depth: false,
+        stencil: false,
+        premultipliedAlpha: false,
+        preserveDrawingBuffer: preserveOutput,
+        powerPreference: "high-performance"
+      };
+      const gl = canvas.getContext("webgl2", options);
+      if (gl === null) {
+        throw new Error("WebGL2 is required. This browser or GPU did not provide a WebGL2 context.");
+      }
+      const maxTextureSize = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+      if (typeof maxTextureSize !== "number" || maxTextureSize < 2048) {
+        throw new Error("The GPU reports an insufficient maximum texture size: " + String(maxTextureSize));
+      }
+      if (gl.getExtension("EXT_color_buffer_float") === null) {
+        throw new Error("EXT_color_buffer_float is required for the linear HDR render pipeline.");
+      }
+      const hdrFormat = Object.freeze({ internalFormat: gl.RGBA16F, type: gl.HALF_FLOAT, name: "RGBA16F" });
+
+      const sceneProgram = createProgram(gl, SCENE_SHADER, "scene");
+      const blurProgram = createProgram(gl, BLUR_SHADER, "bloom");
+      const compositeProgram = createProgram(gl, COMPOSITE_SHADER, "composite");
+      const presentProgram = createProgram(gl, PRESENT_SHADER, "present");
+      const vao = gl.createVertexArray();
+      if (vao === null) {
+        throw new Error("WebGL failed to allocate the fullscreen vertex array.");
+      }
+      gl.bindVertexArray(vao);
+      gl.disable(gl.DEPTH_TEST);
+      gl.disable(gl.BLEND);
+      gl.clearColor(0, 0, 0, 1);
+
+      const uniforms = Object.freeze({
+        scene: Object.freeze({
+          resolution: mustUniform(gl, sceneProgram, "u_resolution"),
+          time: mustUniform(gl, sceneProgram, "u_time"),
+          local: mustUniform(gl, sceneProgram, "u_local"),
+          transition: mustUniform(gl, sceneProgram, "u_transition"),
+          scene: mustUniform(gl, sceneProgram, "u_scene"),
+          audio: mustUniform(gl, sceneProgram, "u_audio"),
+          meta: mustUniform(gl, sceneProgram, "u_meta")
+        }),
+        blur: Object.freeze({
+          source: mustUniform(gl, blurProgram, "u_source"),
+          texel: mustUniform(gl, blurProgram, "u_texel"),
+          direction: mustUniform(gl, blurProgram, "u_direction"),
+          extract: mustUniform(gl, blurProgram, "u_extract")
+        }),
+        composite: Object.freeze({
+          sceneTex: mustUniform(gl, compositeProgram, "u_scene_tex"),
+          bloomTex: mustUniform(gl, compositeProgram, "u_bloom_tex"),
+          historyTex: mustUniform(gl, compositeProgram, "u_history_tex"),
+          feedback: mustUniform(gl, compositeProgram, "u_feedback"),
+          flash: mustUniform(gl, compositeProgram, "u_flash")
+        }),
+        present: Object.freeze({
+          source: mustUniform(gl, presentProgram, "u_source")
+        })
+      });
+
+      let renderScale = initialRenderScale;
+      let targets = null;
+      let historyIndex = 0;
+      let rollingFrameMs = 16.7;
+      let scaleCheckElapsedMs = 0;
+      let renderedFrames = 0;
+
+      function deleteTargetSet(targetSet) {
+        deleteTarget(gl, targetSet.scene);
+        deleteTarget(gl, targetSet.blurA);
+        deleteTarget(gl, targetSet.blurB);
+        deleteTarget(gl, targetSet.history[0]);
+        deleteTarget(gl, targetSet.history[1]);
+      }
+
+      function allocateTargets(width, height) {
+        const bloomWidth = Math.max(160, Math.floor(width * 0.5));
+        const bloomHeight = Math.max(90, Math.floor(height * 0.5));
+        const created = [];
+        const allocate = (targetWidth, targetHeight, label, format) => {
+          const target = createTarget(gl, targetWidth, targetHeight, label, format);
+          created.push(target);
+          return target;
+        };
+        let nextTargets;
+        try {
+          nextTargets = {
+            scene: allocate(width, height, "scene", hdrFormat),
+            blurA: allocate(bloomWidth, bloomHeight, "bloom horizontal", hdrFormat),
+            blurB: allocate(bloomWidth, bloomHeight, "bloom vertical", hdrFormat),
+            history: [
+              allocate(width, height, "history A", hdrFormat),
+              allocate(width, height, "history B", hdrFormat)
+            ]
+          };
+          for (const historyTarget of nextTargets.history) {
+            gl.bindFramebuffer(gl.FRAMEBUFFER, historyTarget.framebuffer);
+            gl.viewport(0, 0, width, height);
+            gl.clear(gl.COLOR_BUFFER_BIT);
+          }
+          gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+          assertNoGlError(gl, "transactional render-target allocation");
+        } catch (reason) {
+          for (const target of created) deleteTarget(gl, target);
+          throw reason;
+        }
+
+        const previousTargets = targets;
+        targets = nextTargets;
+        historyIndex = 0;
+        if (previousTargets !== null) deleteTargetSet(previousTargets);
+      }
+
+      function resize(force) {
+        const cssWidth = Math.max(1, canvas.clientWidth);
+        const cssHeight = Math.max(1, canvas.clientHeight);
+        const desiredDpr = Math.min(window.devicePixelRatio, 1.5);
+        const outputScale = Math.min(
+          desiredDpr,
+          maxTextureSize / cssWidth,
+          maxTextureSize / cssHeight
+        );
+        const outputWidth = Math.max(1, Math.floor(cssWidth * outputScale));
+        const outputHeight = Math.max(1, Math.floor(cssHeight * outputScale));
+        const minimumInternalScale = Math.max(320 / outputWidth, 180 / outputHeight);
+        const maximumInternalScale = Math.min(maxTextureSize / outputWidth, maxTextureSize / outputHeight);
+        const internalScale = Math.min(maximumInternalScale, Math.max(renderScale, minimumInternalScale));
+        const internalWidth = Math.max(1, Math.floor(outputWidth * internalScale));
+        const internalHeight = Math.max(1, Math.floor(outputHeight * internalScale));
+        const outputChanged = canvas.width !== outputWidth || canvas.height !== outputHeight;
+        const internalChanged = targets === null ||
+          targets.scene.width !== internalWidth || targets.scene.height !== internalHeight;
+        if (force || outputChanged || internalChanged) {
+          allocateTargets(internalWidth, internalHeight);
+          canvas.width = outputWidth;
+          canvas.height = outputHeight;
+        }
+      }
+
+      function drawFullscreen() {
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+      }
+
+      function render(frame) {
+        if (targets === null) {
+          throw new Error("Renderer targets are not allocated before render().");
+        }
+        const width = targets.scene.width;
+        const height = targets.scene.height;
+        const bloomWidth = targets.blurA.width;
+        const bloomHeight = targets.blurA.height;
+
+        gl.bindFramebuffer(gl.FRAMEBUFFER, targets.scene.framebuffer);
+        gl.viewport(0, 0, width, height);
+        gl.useProgram(sceneProgram);
+        gl.uniform2f(uniforms.scene.resolution, width, height);
+        gl.uniform1f(uniforms.scene.time, frame.time);
+        gl.uniform1f(uniforms.scene.local, frame.local);
+        gl.uniform1f(uniforms.scene.transition, frame.transition);
+        gl.uniform1i(uniforms.scene.scene, frame.sceneIndex);
+        gl.uniform4f(uniforms.scene.audio, frame.kick, frame.snare, frame.hat, frame.bass);
+        gl.uniform4f(uniforms.scene.meta, frame.energy, frame.impact, frame.beatPhase, frame.barPhase);
+        drawFullscreen();
+
+        gl.bindFramebuffer(gl.FRAMEBUFFER, targets.blurA.framebuffer);
+        gl.viewport(0, 0, bloomWidth, bloomHeight);
+        gl.useProgram(blurProgram);
+        bindTexture(gl, targets.scene.texture, 0);
+        gl.uniform1i(uniforms.blur.source, 0);
+        gl.uniform2f(uniforms.blur.texel, 1 / width, 1 / height);
+        gl.uniform2f(uniforms.blur.direction, 1, 0);
+        gl.uniform1i(uniforms.blur.extract, 1);
+        drawFullscreen();
+
+        gl.bindFramebuffer(gl.FRAMEBUFFER, targets.blurB.framebuffer);
+        gl.viewport(0, 0, bloomWidth, bloomHeight);
+        bindTexture(gl, targets.blurA.texture, 0);
+        gl.uniform2f(uniforms.blur.texel, 1 / bloomWidth, 1 / bloomHeight);
+        gl.uniform2f(uniforms.blur.direction, 0, 1);
+        gl.uniform1i(uniforms.blur.extract, 0);
+        drawFullscreen();
+
+        const previous = targets.history[historyIndex];
+        const nextIndex = 1 - historyIndex;
+        const next = targets.history[nextIndex];
+        gl.bindFramebuffer(gl.FRAMEBUFFER, next.framebuffer);
+        gl.viewport(0, 0, width, height);
+        gl.useProgram(compositeProgram);
+        bindTexture(gl, targets.scene.texture, 0);
+        bindTexture(gl, targets.blurB.texture, 1);
+        bindTexture(gl, previous.texture, 2);
+        gl.uniform1i(uniforms.composite.sceneTex, 0);
+        gl.uniform1i(uniforms.composite.bloomTex, 1);
+        gl.uniform1i(uniforms.composite.historyTex, 2);
+        gl.uniform1f(uniforms.composite.feedback, frame.feedback);
+        gl.uniform1f(uniforms.composite.flash, frame.flash);
+        drawFullscreen();
+
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.viewport(0, 0, canvas.width, canvas.height);
+        gl.useProgram(presentProgram);
+        bindTexture(gl, next.texture, 0);
+        gl.uniform1i(uniforms.present.source, 0);
+        drawFullscreen();
+        historyIndex = nextIndex;
+        renderedFrames += 1;
+        assertNoGlError(gl, "frame " + String(renderedFrames));
+      }
+
+      function registerFrameDuration(frameMs) {
+        if (!Number.isFinite(frameMs) || frameMs <= 0) {
+          throw new Error("Invalid frame duration supplied to renderer: " + String(frameMs));
+        }
+        rollingFrameMs = rollingFrameMs * 0.96 + frameMs * 0.04;
+        if (!adaptiveScaling) return;
+        scaleCheckElapsedMs += frameMs;
+        if (scaleCheckElapsedMs < 2000) return;
+        scaleCheckElapsedMs = 0;
+        let nextScale = renderScale;
+        if (rollingFrameMs > 32 && renderScale > 0.46) {
+          nextScale = Math.max(0.46, renderScale - 0.12);
+        } else if (rollingFrameMs > 22 && renderScale > 0.46) {
+          nextScale = Math.max(0.46, renderScale - 0.07);
+        } else if (rollingFrameMs < 14.5 && renderScale < 0.84) {
+          nextScale = Math.min(0.84, renderScale + 0.04);
+        }
+        if (nextScale !== renderScale) {
+          renderScale = nextScale;
+          resize(true);
+        }
+      }
+
+      resize(true);
+      return Object.freeze({
+        gl,
+        render,
+        resize,
+        registerFrameDuration,
+        finish() {
+          gl.finish();
+          assertNoGlError(gl, "capture completion");
+        },
+        copyToCanvas(targetCanvas) {
+          gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+          gl.finish();
+          assertNoGlError(gl, "capture snapshot readback");
+          targetCanvas.width = canvas.width;
+          targetCanvas.height = canvas.height;
+          const context2d = targetCanvas.getContext("2d", { alpha: false });
+          if (context2d === null) {
+            throw new Error("Browser refused to allocate the deterministic 2D capture surface.");
+          }
+          context2d.drawImage(canvas, 0, 0);
+        },
+        diagnostics() {
+          if (targets === null) {
+            throw new Error("Renderer diagnostics requested before target allocation.");
+          }
+          return Object.freeze({
+            output: canvas.width + "×" + canvas.height,
+            internal: targets.scene.width + "×" + targets.scene.height,
+            bloom: targets.blurA.width + "×" + targets.blurA.height,
+            targetFormat: targets.scene.format,
+            scale: renderScale,
+            frameMs: rollingFrameMs,
+            renderer: String(gl.getParameter(gl.RENDERER)),
+            vendor: String(gl.getParameter(gl.VENDOR))
+          });
+        }
+      });
+    }
+
+    function xorshift32(seed) {
+      let state = seed >>> 0;
+      if (state === 0) {
+        throw new Error("xorshift32 requires a non-zero seed.");
+      }
+      return () => {
+        state ^= state << 13;
+        state ^= state >>> 17;
+        state ^= state << 5;
+        return (state >>> 0) / 4294967296;
+      };
+    }
+
+    function createNoiseBuffer(context, seconds, random) {
+      const frameCount = Math.floor(context.sampleRate * seconds);
+      if (frameCount <= 0) {
+        throw new Error("Noise buffer duration must produce at least one sample.");
+      }
+      const buffer = context.createBuffer(1, frameCount, context.sampleRate);
+      const channel = buffer.getChannelData(0);
+      for (let i = 0; i < frameCount; i += 1) {
+        channel[i] = random() * 2 - 1;
+      }
+      return buffer;
+    }
+
+    function createImpulseBuffer(context, seconds, random) {
+      const frameCount = Math.floor(context.sampleRate * seconds);
+      if (frameCount <= 0) {
+        throw new Error("Impulse buffer duration must produce at least one sample.");
+      }
+      const buffer = context.createBuffer(2, frameCount, context.sampleRate);
+      for (let channelIndex = 0; channelIndex < 2; channelIndex += 1) {
+        const channel = buffer.getChannelData(channelIndex);
+        for (let i = 0; i < frameCount; i += 1) {
+          const time = i / context.sampleRate;
+          const decay = Math.exp(-time * 2.45);
+          channel[i] = (random() * 2 - 1) * decay * (0.72 + 0.28 * Math.sin(i * 0.017 + channelIndex));
+        }
+      }
+      return buffer;
+    }
+
+    function createDistortionCurve(amount) {
+      const samples = 2048;
+      const curve = new Float32Array(samples);
+      for (let i = 0; i < samples; i += 1) {
+        const x = i * 2 / (samples - 1) - 1;
+        curve[i] = Math.tanh(x * amount) / Math.tanh(amount);
+      }
+      return curve;
+    }
+
+    function kickAt(bar, tick) {
+      if (bar < 8) return false;
+      if (bar < 16) return tick === 0 || tick === 8;
+      if (bar < 32) return tick === 0 || tick === 6 || tick === 10 || tick === 14;
+      if (bar < 40) return false;
+      if (bar < 48) return tick === 0 || tick === 6 || tick === 12;
+      if (bar < 72) return tick === 0 || tick === 4 || tick === 7 || tick === 10 || tick === 14;
+      if (bar < 80) return false;
+      if (bar < 96) return tick === 0 || tick === 3 || tick === 6 || tick === 8 || tick === 12 || tick === 14;
+      if (bar < 104) return tick === 0 || tick === 8;
+      return tick === 0 || (bar < 108 && tick === 8);
+    }
+
+    function snareAt(bar, tick) {
+      if (bar < 16) return false;
+      if (bar >= 32 && bar < 40) return false;
+      if (bar >= 72 && bar < 80) return tick === 8;
+      if (bar >= 104) return bar < 108 && tick === 8;
+      return tick === 4 || tick === 12;
+    }
+
+    function hatAt(bar, tick) {
+      if (bar < 16 || (bar >= 32 && bar < 40)) return false;
+      if (bar >= 104) return bar < 108 && tick % 4 === 2;
+      if (bar >= 80 && bar < 96) return true;
+      return tick % 2 === 0;
+    }
+
+    function bassAt(bar, tick) {
+      if (bar < 16 || (bar >= 32 && bar < 40) || bar >= 108) return false;
+      if (bar >= 72 && bar < 80) return tick === 0 || tick === 8;
+      return tick % 2 === 0;
+    }
+
+    function leadAt(bar, tick) {
+      const active =
+        (bar >= 24 && bar < 32) ||
+        (bar >= 48 && bar < 72) ||
+        (bar >= 80 && bar < 104);
+      return active && tick % 2 === 0;
+    }
+
+    async function createAudioEngine() {
+      if (typeof window.AudioContext !== "function") {
+        throw new Error("Web Audio is required. AudioContext is not available in this browser.");
+      }
+      const context = new window.AudioContext({ latencyHint: "interactive" });
+      try {
+      await context.resume();
+      if (context.state !== "running") {
+        await context.close();
+        throw new Error("The audio device refused to enter the running state after the user gesture.");
+      }
+      if (typeof context.getOutputTimestamp !== "function") {
+        await context.close();
+        throw new Error("Accurate output timestamps are required for audiovisual synchronization.");
+      }
+
+      const random = xorshift32(0xC0DEF00D);
+      const noiseBuffer = createNoiseBuffer(context, 2.0, random);
+      const impulseBuffer = createImpulseBuffer(context, 2.8, random);
+
+      const master = context.createGain();
+      const compressor = context.createDynamicsCompressor();
+      const musicBus = context.createGain();
+      const drumBus = context.createGain();
+      const leadBus = context.createGain();
+      const delay = context.createDelay(2.0);
+      const delayFeedback = context.createGain();
+      const delayWet = context.createGain();
+      const reverb = context.createConvolver();
+      const reverbSend = context.createGain();
+      const reverbWet = context.createGain();
+
+      master.gain.value = 0.72;
+      musicBus.gain.value = 1;
+      drumBus.gain.value = 0.9;
+      leadBus.gain.value = 0.78;
+      compressor.threshold.value = -13;
+      compressor.knee.value = 18;
+      compressor.ratio.value = 5;
+      compressor.attack.value = 0.003;
+      compressor.release.value = 0.22;
+      delay.delayTime.value = BEAT_SECONDS * 0.75;
+      delayFeedback.gain.value = 0.31;
+      delayWet.gain.value = 0.24;
+      reverb.buffer = impulseBuffer;
+      reverbSend.gain.value = 0.18;
+      reverbWet.gain.value = 0.20;
+
+      musicBus.connect(master);
+      drumBus.connect(master);
+      leadBus.connect(musicBus);
+      leadBus.connect(delay);
+      delay.connect(delayFeedback);
+      delayFeedback.connect(delay);
+      delay.connect(delayWet);
+      delayWet.connect(master);
+      musicBus.connect(reverbSend);
+      reverbSend.connect(reverb);
+      reverb.connect(reverbWet);
+      reverbWet.connect(master);
+      master.connect(compressor);
+      compressor.connect(context.destination);
+
+      function noiseSource() {
+        const source = context.createBufferSource();
+        source.buffer = noiseBuffer;
+        return source;
+      }
+
+      function scheduleKick(time, velocity) {
+        const oscillator = context.createOscillator();
+        const gain = context.createGain();
+        oscillator.type = "sine";
+        oscillator.frequency.setValueAtTime(155, time);
+        oscillator.frequency.exponentialRampToValueAtTime(47, time + 0.105);
+        gain.gain.setValueAtTime(0.0001, time);
+        gain.gain.exponentialRampToValueAtTime(0.92 * velocity, time + 0.002);
+        gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.42);
+        oscillator.connect(gain);
+        gain.connect(drumBus);
+        oscillator.start(time);
+        oscillator.stop(time + 0.44);
+
+        const click = noiseSource();
+        const clickFilter = context.createBiquadFilter();
+        const clickGain = context.createGain();
+        clickFilter.type = "highpass";
+        clickFilter.frequency.value = 5200;
+        clickGain.gain.setValueAtTime(0.22 * velocity, time);
+        clickGain.gain.exponentialRampToValueAtTime(0.0001, time + 0.018);
+        click.connect(clickFilter);
+        clickFilter.connect(clickGain);
+        clickGain.connect(drumBus);
+        click.start(time, 0.17, 0.022);
+        click.stop(time + 0.024);
+
+        musicBus.gain.setValueAtTime(1, time);
+        musicBus.gain.linearRampToValueAtTime(0.46, time + 0.014);
+        musicBus.gain.exponentialRampToValueAtTime(1, time + 0.14);
+      }
+
+      function scheduleSnare(time, velocity) {
+        const noise = noiseSource();
+        const noiseFilter = context.createBiquadFilter();
+        const noiseGain = context.createGain();
+        noiseFilter.type = "bandpass";
+        noiseFilter.frequency.value = 1850;
+        noiseFilter.Q.value = 0.62;
+        noiseGain.gain.setValueAtTime(0.46 * velocity, time);
+        noiseGain.gain.exponentialRampToValueAtTime(0.0001, time + 0.19);
+        noise.connect(noiseFilter);
+        noiseFilter.connect(noiseGain);
+        noiseGain.connect(drumBus);
+        noise.start(time, 0.41, 0.21);
+        noise.stop(time + 0.22);
+
+        for (const frequency of [185, 330]) {
+          const body = context.createOscillator();
+          const bodyGain = context.createGain();
+          body.type = "triangle";
+          body.frequency.value = frequency;
+          bodyGain.gain.setValueAtTime(0.15 * velocity, time);
+          bodyGain.gain.exponentialRampToValueAtTime(0.0001, time + 0.12);
+          body.connect(bodyGain);
+          bodyGain.connect(drumBus);
+          body.start(time);
+          body.stop(time + 0.13);
+        }
+      }
+
+      function scheduleHat(time, velocity, open) {
+        const noise = noiseSource();
+        const filter = context.createBiquadFilter();
+        const gain = context.createGain();
+        const duration = open ? 0.18 : 0.045;
+        filter.type = "highpass";
+        filter.frequency.value = open ? 6100 : 7800;
+        gain.gain.setValueAtTime((open ? 0.13 : 0.085) * velocity, time);
+        gain.gain.exponentialRampToValueAtTime(0.0001, time + duration);
+        noise.connect(filter);
+        filter.connect(gain);
+        gain.connect(drumBus);
+        const offset = fract(time * 17.31) * 1.4;
+        noise.start(time, offset, duration + 0.01);
+        noise.stop(time + duration + 0.012);
+      }
+
+      function scheduleBass(time, note, duration, velocity) {
+        const filter = context.createBiquadFilter();
+        const gain = context.createGain();
+        const shaper = context.createWaveShaper();
+        shaper.curve = createDistortionCurve(1.65);
+        shaper.oversample = "2x";
+        filter.type = "lowpass";
+        filter.Q.value = 7.2;
+        filter.frequency.setValueAtTime(220, time);
+        filter.frequency.exponentialRampToValueAtTime(880 + velocity * 900, time + 0.028);
+        filter.frequency.exponentialRampToValueAtTime(170, time + duration);
+        gain.gain.setValueAtTime(0.0001, time);
+        gain.gain.exponentialRampToValueAtTime(0.19 * velocity, time + 0.008);
+        gain.gain.exponentialRampToValueAtTime(0.0001, time + duration);
+        shaper.connect(filter);
+        filter.connect(gain);
+        gain.connect(musicBus);
+
+        const sub = context.createOscillator();
+        const edge = context.createOscillator();
+        sub.type = "triangle";
+        edge.type = "square";
+        sub.frequency.value = midiToHz(note);
+        edge.frequency.value = midiToHz(note) * 2;
+        const edgeGain = context.createGain();
+        edgeGain.gain.value = 0.12;
+        sub.connect(shaper);
+        edge.connect(edgeGain);
+        edgeGain.connect(shaper);
+        sub.start(time);
+        edge.start(time);
+        sub.stop(time + duration + 0.02);
+        edge.stop(time + duration + 0.02);
+      }
+
+      function scheduleLead(time, note, duration, velocity) {
+        const filter = context.createBiquadFilter();
+        const gain = context.createGain();
+        filter.type = "lowpass";
+        filter.Q.value = 5.5;
+        filter.frequency.setValueAtTime(820, time);
+        filter.frequency.exponentialRampToValueAtTime(3600 + velocity * 1800, time + 0.035);
+        filter.frequency.exponentialRampToValueAtTime(720, time + duration);
+        gain.gain.setValueAtTime(0.0001, time);
+        gain.gain.exponentialRampToValueAtTime(0.095 * velocity, time + 0.012);
+        gain.gain.exponentialRampToValueAtTime(0.0001, time + duration);
+        filter.connect(gain);
+        gain.connect(leadBus);
+
+        for (const detune of [-7, 7]) {
+          const oscillator = context.createOscillator();
+          oscillator.type = detune < 0 ? "sawtooth" : "square";
+          oscillator.frequency.value = midiToHz(note);
+          oscillator.detune.value = detune;
+          const oscillatorGain = context.createGain();
+          oscillatorGain.gain.value = detune < 0 ? 0.52 : 0.24;
+          oscillator.connect(oscillatorGain);
+          oscillatorGain.connect(filter);
+          oscillator.start(time);
+          oscillator.stop(time + duration + 0.03);
+        }
+      }
+
+      function schedulePad(time, notes, duration, intensity) {
+        const filter = context.createBiquadFilter();
+        const gain = context.createGain();
+        filter.type = "lowpass";
+        filter.Q.value = 0.8;
+        filter.frequency.setValueAtTime(430 + intensity * 420, time);
+        filter.frequency.linearRampToValueAtTime(1200 + intensity * 1200, time + duration * 0.55);
+        filter.frequency.linearRampToValueAtTime(360, time + duration);
+        gain.gain.setValueAtTime(0.0001, time);
+        gain.gain.exponentialRampToValueAtTime(0.052 * intensity, time + Math.min(0.8, duration * 0.22));
+        gain.gain.setValueAtTime(0.052 * intensity, time + duration * 0.72);
+        gain.gain.exponentialRampToValueAtTime(0.0001, time + duration);
+        filter.connect(gain);
+        gain.connect(musicBus);
+
+        notes.forEach((note, index) => {
+          const oscillator = context.createOscillator();
+          oscillator.type = index % 2 === 0 ? "sawtooth" : "triangle";
+          oscillator.frequency.value = midiToHz(note);
+          oscillator.detune.value = (index - 1.5) * 4.5;
+          const oscillatorGain = context.createGain();
+          oscillatorGain.gain.value = 0.18;
+          oscillator.connect(oscillatorGain);
+          oscillatorGain.connect(filter);
+          oscillator.start(time);
+          oscillator.stop(time + duration + 0.04);
+        });
+      }
+
+      function scheduleRiser(time, duration) {
+        const noise = noiseSource();
+        const filter = context.createBiquadFilter();
+        const gain = context.createGain();
+        filter.type = "bandpass";
+        filter.Q.value = 1.1;
+        filter.frequency.setValueAtTime(280, time);
+        filter.frequency.exponentialRampToValueAtTime(9200, time + duration);
+        gain.gain.setValueAtTime(0.0001, time);
+        gain.gain.exponentialRampToValueAtTime(0.18, time + duration * 0.72);
+        gain.gain.exponentialRampToValueAtTime(0.0001, time + duration);
+        noise.connect(filter);
+        filter.connect(gain);
+        gain.connect(musicBus);
+        noise.start(time, 0.03, duration);
+        noise.stop(time + duration + 0.01);
+      }
+
+      function scheduleImpact(time) {
+        const oscillator = context.createOscillator();
+        const gain = context.createGain();
+        oscillator.type = "sine";
+        oscillator.frequency.setValueAtTime(74, time);
+        oscillator.frequency.exponentialRampToValueAtTime(28, time + 1.1);
+        gain.gain.setValueAtTime(0.0001, time);
+        gain.gain.exponentialRampToValueAtTime(0.42, time + 0.012);
+        gain.gain.exponentialRampToValueAtTime(0.0001, time + 1.35);
+        oscillator.connect(gain);
+        gain.connect(master);
+        oscillator.start(time);
+        oscillator.stop(time + 1.4);
+      }
+
+      function sectionEnergy(bar) {
+        if (bar < 8) return 0.10;
+        if (bar < 16) return 0.24;
+        if (bar < 32) return 0.58;
+        if (bar < 40) return 0.20;
+        if (bar < 48) return 0.48;
+        if (bar < 56) return 0.67;
+        if (bar < 72) return 0.80;
+        if (bar < 80) return 0.38;
+        if (bar < 96) return 1.0;
+        if (bar < 104) return 0.72;
+        return 0.28;
+      }
+
+      function scheduleTick(index, time) {
+        const bar = Math.floor(index / 16);
+        const tick = index % 16;
+        const energy = sectionEnergy(bar);
+
+        if (tick === 0 && bar % 2 === 0) {
+          const chord = CHORDS[Math.floor(bar / 2) % CHORDS.length];
+          const padIntensity = bar < 8 ? 0.42 : 0.68 + energy * 0.25;
+          schedulePad(time, chord, BAR_SECONDS * 1.96, padIntensity);
+        }
+        if (kickAt(bar, tick)) {
+          scheduleKick(time, tick === 0 ? 1 : 0.76 + energy * 0.16);
+        }
+        if (snareAt(bar, tick)) {
+          scheduleSnare(time, tick === 12 ? 0.92 : 0.78);
+        }
+        if (hatAt(bar, tick)) {
+          const open = tick === 14 && bar >= 48;
+          const velocity = 0.62 + 0.34 * fract(index * 0.61803398875);
+          scheduleHat(time, velocity, open);
+        }
+        if (bassAt(bar, tick)) {
+          const chordIndex = Math.floor(bar / 2) % 4;
+          const roots = [38, 34, 31, 33];
+          const intervals = [0, 0, 7, 0, 3, 0, 10, 7];
+          const step = (tick / 2) % intervals.length;
+          let note = roots[chordIndex] + intervals[step];
+          if (bar >= 80 && tick % 4 === 0) note += 12;
+          scheduleBass(time, note, TICK_SECONDS * 1.75, 0.74 + energy * 0.22);
+        }
+        if (leadAt(bar, tick)) {
+          const motifIndex = (bar * 8 + tick / 2) % LEAD_NOTES.length;
+          let note = LEAD_NOTES[motifIndex];
+          if (bar >= 88 && bar < 96) note += 12;
+          scheduleLead(time, note, TICK_SECONDS * 1.82, 0.65 + energy * 0.3);
+        }
+        if (tick === 0 && IMPACT_BARS.includes(bar)) {
+          scheduleImpact(time);
+        }
+        if (tick === 0 && [7, 15, 31, 55, 79, 95, 103].includes(bar)) {
+          scheduleRiser(time, BAR_SECONDS);
+        }
+      }
+
+      const startAt = context.currentTime + 0.18;
+      let nextTickIndex = 0;
+      let schedulerId = 0;
+      let stopped = false;
+      let stopPromise = null;
+
+      function pumpScheduler() {
+        if (stopped) return;
+        const horizon = context.currentTime + 2.5;
+        while (nextTickIndex < TOTAL_TICKS) {
+          const eventTime = startAt + nextTickIndex * TICK_SECONDS;
+          if (eventTime >= horizon) break;
+          const lateness = context.currentTime - eventTime;
+          if (lateness > TICK_SECONDS * 0.5) {
+            window.clearInterval(schedulerId);
+            throw new Error(
+              "Audio scheduler lost synchronization by " + lateness.toFixed(3) +
+              " seconds at tick " + String(nextTickIndex) + "."
+            );
+          }
+          scheduleTick(nextTickIndex, eventTime);
+          nextTickIndex += 1;
+        }
+        if (nextTickIndex === TOTAL_TICKS) window.clearInterval(schedulerId);
+      }
+
+      pumpScheduler();
+      schedulerId = window.setInterval(pumpScheduler, 200);
+
+      return Object.freeze({
+        context,
+        startAt,
+        time() {
+          const timestamp = context.getOutputTimestamp();
+          if (!Number.isFinite(timestamp.contextTime) || !Number.isFinite(timestamp.performanceTime)) {
+            throw new Error("Audio output timestamp contained non-finite values.");
+          }
+          return timestamp.contextTime - startAt;
+        },
+        state() {
+          return context.state;
+        },
+        async suspend() {
+          if (stopped) {
+            throw new Error("Cannot suspend after the audio engine has stopped.");
+          }
+          if (context.state !== "running") {
+            throw new Error("AudioContext must be running before suspend(), received " + context.state + ".");
+          }
+          await context.suspend();
+          if (context.state !== "suspended") {
+            throw new Error("AudioContext failed to enter suspended state.");
+          }
+        },
+        async resume() {
+          if (stopped) {
+            throw new Error("Cannot resume after the audio engine has stopped.");
+          }
+          if (context.state !== "suspended") {
+            throw new Error("AudioContext must be suspended before resume(), received " + context.state + ".");
+          }
+          await context.resume();
+          if (context.state !== "running") {
+            throw new Error("AudioContext failed to return to running state.");
+          }
+        },
+        async stop() {
+          if (stopped) return;
+          if (stopPromise !== null) return stopPromise;
+          window.clearInterval(schedulerId);
+          stopPromise = context.close().then(() => {
+            stopped = true;
+            stopPromise = null;
+          }).catch(reason => {
+            stopPromise = null;
+            throw reason;
+          });
+          return stopPromise;
+        }
+      });
+      } catch (reason) {
+        const initializationError = normalizeError(reason);
+        if (context.state !== "closed") {
+          try {
+            await context.close();
+          } catch (closeReason) {
+            const closeError = normalizeError(closeReason);
+            throw new Error(
+              "Audio initialization failed (" + initializationError.message +
+              ") and context cleanup also failed (" + closeError.message + ")."
+            );
+          }
+        }
+        throw new Error("Audio initialization failed: " + initializationError.message);
+      }
+    }
+
+    function visualEnergy(bar) {
+      if (bar < 8) return 0.10;
+      if (bar < 16) return 0.24;
+      if (bar < 32) return 0.58;
+      if (bar < 40) return 0.20;
+      if (bar < 48) return 0.48;
+      if (bar < 56) return 0.67;
+      if (bar < 72) return 0.80;
+      if (bar < 80) return 0.38;
+      if (bar < 96) return 1.0;
+      if (bar < 104) return 0.72;
+      return 0.28;
+    }
+
+    function eventEnvelope(time, predicate, decayRate, lookbackTicks) {
+      if (!Number.isFinite(time) || time < 0) {
+        throw new Error("Envelope time must be finite and non-negative.");
+      }
+      const currentTick = Math.floor(time / TICK_SECONDS);
+      let envelope = 0;
+      const firstTick = Math.max(0, currentTick - lookbackTicks);
+      for (let index = firstTick; index <= currentTick; index += 1) {
+        const bar = Math.floor(index / 16);
+        const tick = index % 16;
+        if (predicate(bar, tick)) {
+          const delta = time - index * TICK_SECONDS;
+          if (delta >= 0) envelope = Math.max(envelope, Math.exp(-decayRate * delta));
+        }
+      }
+      return envelope;
+    }
+
+    function impactEnvelope(time) {
+      let envelope = 0;
+      for (const bar of IMPACT_BARS) {
+        const delta = time - bar * BAR_SECONDS;
+        if (delta >= 0 && delta < 2.4) {
+          envelope = Math.max(envelope, Math.exp(-3.7 * delta));
+        }
+      }
+      return envelope;
+    }
+
+    function sceneIndexForBar(barFloat) {
+      for (let index = 0; index < SCENES.length; index += 1) {
+        if (barFloat >= SCENES[index].start && barFloat < SCENES[index].end) {
+          return index;
+        }
+      }
+      throw new Error("Timeline bar " + String(barFloat) + " does not map to a scene.");
+    }
+
+    function transportFrame(time) {
+      if (!Number.isFinite(time) || time < 0 || time >= DURATION) {
+        throw new Error("Transport time must be finite and within the demo duration: " + String(time));
+      }
+      const barFloat = time / BAR_SECONDS;
+      const bar = Math.floor(barFloat);
+      const sceneIndex = sceneIndexForBar(barFloat);
+      const scene = SCENES[sceneIndex];
+      const localBars = barFloat - scene.start;
+      const barsRemaining = scene.end - barFloat;
+      const transition = Math.min(
+        smoothstep(0, 0.52, localBars),
+        smoothstep(0, 0.44, barsRemaining)
+      );
+      const kick = eventEnvelope(time, kickAt, 18, 8);
+      const snare = eventEnvelope(time, snareAt, 13, 8);
+      const hat = eventEnvelope(time, hatAt, 35, 4);
+      const bass = eventEnvelope(time, bassAt, 7.5, 12);
+      const impact = impactEnvelope(time);
+      const energy = visualEnergy(bar);
+      return Object.freeze({
+        time,
+        local: time - scene.start * BAR_SECONDS,
+        sceneIndex,
+        bar,
+        barFloat,
+        transition,
+        kick,
+        snare,
+        hat,
+        bass,
+        impact,
+        energy,
+        beatPhase: fract(time / BEAT_SECONDS),
+        barPhase: fract(barFloat),
+        flash: clamp(impact * 0.82 + snare * 0.11, 0, 1),
+        feedback: sceneIndex === 6 ? 0.43 : (sceneIndex === 5 ? 0.26 : 0.13 + impact * 0.12)
+      });
+    }
+
+    function normalizeError(reason) {
+      if (reason instanceof Error) return reason;
+      return new Error(String(reason));
+    }
+
+    let appState = "booting";
+    let renderer = null;
+    let audioEngine = null;
+    let resizeObserver = null;
+    let animationFrameId = 0;
+    let previousFrameTime = performance.now();
+    const previewStartedAt = previousFrameTime;
+    let activeSceneIndex = -1;
+    let sceneCardTimer = 0;
+    let sceneRevealFrameId = 0;
+    const queryParameters = new URLSearchParams(window.location.search);
+    let diagnosticsVisible = queryParameters.get("diag") === "1";
+    const captureText = queryParameters.get("capture");
+    const captureMode = captureText === "1";
+    const captureBarText = queryParameters.get("bar");
+    const qualityText = queryParameters.get("quality");
+    const adaptiveText = queryParameters.get("adaptive");
+    let configurationError = null;
+    let captureTimelineTime = BAR_SECONDS * 0.7;
+    let requestedQuality = 0.72;
+    let adaptiveMode = false;
+    if (captureText !== null && captureText !== "0" && captureText !== "1") {
+      configurationError = new Error("Capture mode must be either 0 or 1.");
+    }
+    if (captureBarText !== null) {
+      const captureBar = Number(captureBarText);
+      if (
+        captureBarText.trim() === "" || !Number.isFinite(captureBar) ||
+        captureBar < 0 || captureBar >= TOTAL_BARS
+      ) {
+        configurationError = new Error("Capture bar must be a finite number in [0, " + String(TOTAL_BARS) + ").");
+      } else {
+        captureTimelineTime = captureBar * BAR_SECONDS + BAR_SECONDS * 0.18;
+      }
+    }
+    if (qualityText !== null) {
+      requestedQuality = Number(qualityText);
+      if (!Number.isFinite(requestedQuality) || requestedQuality < 0.25 || requestedQuality > 1) {
+        configurationError = new Error("Quality must be a finite render scale in [0.25, 1].");
+      }
+    }
+    if (adaptiveText !== null) {
+      if (adaptiveText !== "0" && adaptiveText !== "1") {
+        configurationError = new Error("Adaptive mode must be either 0 or 1.");
+      } else {
+        adaptiveMode = adaptiveText === "1";
+      }
+    }
+    if (!captureMode && captureBarText !== null) {
+      configurationError = new Error("The bar parameter is valid only when capture=1.");
+    }
+    if (captureMode && adaptiveMode) {
+      configurationError = new Error("Deterministic capture is incompatible with adaptive=1.");
+    }
+    let uiFrameCounter = 0;
+    let fatalErrorShown = false;
+
+    function shutdownRuntime() {
+      if (animationFrameId !== 0) {
+        window.cancelAnimationFrame(animationFrameId);
+        animationFrameId = 0;
+      }
+      window.clearTimeout(sceneCardTimer);
+      if (sceneRevealFrameId !== 0) {
+        window.cancelAnimationFrame(sceneRevealFrameId);
+        sceneRevealFrameId = 0;
+      }
+      if (resizeObserver !== null) {
+        resizeObserver.disconnect();
+        resizeObserver = null;
+      }
+      if (audioEngine === null) return Promise.resolve();
+      const engineToStop = audioEngine;
+      return engineToStop.stop().then(() => {
+        if (audioEngine === engineToStop) audioEngine = null;
+      });
+    }
+
+    function showFatal(reason) {
+      const error = normalizeError(reason);
+      if (fatalErrorShown) {
+        console.error("Additional failure after fatal shutdown:", error);
+        return;
+      }
+      fatalErrorShown = true;
+      appState = "failed";
+      shutdownRuntime().catch(shutdownReason => {
+        const shutdownError = normalizeError(shutdownReason);
+        ui.errorMessage.textContent +=
+          "\n\nAUDIO TEARDOWN FAILURE — reload required:\n" + shutdownError.message;
+        console.error("Additional audio teardown failure:", shutdownError);
+      });
+      const stackText = error.stack === undefined ? "" : "\n\n" + String(error.stack);
+      ui.errorMessage.textContent = error.message + stackText;
+      ui.errorPanel.classList.add("visible");
+      ui.gate.classList.add("dismissed");
+      ui.hud.classList.remove("visible");
+      console.error(error);
+    }
+
+    function revealScene(index, persistent) {
+      if (!Number.isInteger(index) || index < 0 || index >= SCENES.length) {
+        throw new Error("Invalid scene index supplied to revealScene(): " + String(index));
+      }
+      if (typeof persistent !== "boolean") {
+        throw new Error("revealScene() requires an explicit persistence mode.");
+      }
+      activeSceneIndex = index;
+      const scene = SCENES[index];
+      ui.sceneKicker.textContent = scene.kicker;
+      ui.sceneTitle.textContent = scene.title;
+      ui.sceneIndex.textContent =
+        "MEMORY " + String(index + 1).padStart(2, "0") + " / " + String(SCENES.length).padStart(2, "0");
+      ui.sceneCard.classList.remove("reveal");
+      window.clearTimeout(sceneCardTimer);
+      if (sceneRevealFrameId !== 0) {
+        window.cancelAnimationFrame(sceneRevealFrameId);
+        sceneRevealFrameId = 0;
+      }
+      if (persistent) {
+        ui.sceneCard.classList.add("reveal");
+        return;
+      }
+      sceneRevealFrameId = window.requestAnimationFrame(() => {
+        sceneRevealFrameId = 0;
+        ui.sceneCard.classList.add("reveal");
+        sceneCardTimer = window.setTimeout(() => {
+          ui.sceneCard.classList.remove("reveal");
+        }, index === 0 ? 4800 : 3600);
+      });
+    }
+
+    function updateInterface(frame, forcePersistent) {
+      if (typeof forcePersistent !== "boolean") {
+        throw new Error("updateInterface() requires an explicit persistence mode.");
+      }
+      if (frame.sceneIndex !== activeSceneIndex) revealScene(frame.sceneIndex, forcePersistent);
+      uiFrameCounter += 1;
+      if (!forcePersistent && uiFrameCounter % 5 !== 0) return;
+
+      const visibleBar = Math.min(TOTAL_BARS, frame.bar + 1);
+      ui.transport.textContent =
+        "BAR " + String(visibleBar).padStart(3, "0") + " · " + String(BPM) + " BPM";
+      ui.progress.style.width = (frame.time / DURATION * 100).toFixed(4) + "%";
+
+      if (diagnosticsVisible && renderer !== null) {
+        const stats = renderer.diagnostics();
+        const audioState = audioEngine === null ? "preview" : audioEngine.state();
+        ui.diagnostics.textContent =
+          "PALIMPSEST ENGINE / DIAGNOSTICS\n" +
+          "scene       " + String(frame.sceneIndex) + "  " + SCENES[frame.sceneIndex].title + "\n" +
+          "bar         " + frame.barFloat.toFixed(3) + " / " + String(TOTAL_BARS) + "\n" +
+          "time        " + frame.time.toFixed(3) + " s\n" +
+          "audio       " + audioState + "\n" +
+          "output      " + stats.output + "\n" +
+          "internal    " + stats.internal + "\n" +
+          "bloom       " + stats.bloom + "\n" +
+          "targets     " + stats.targetFormat + "\n" +
+          "scale       " + stats.scale.toFixed(2) + "\n" +
+          "frame       " + stats.frameMs.toFixed(2) + " ms\n" +
+          "fps         " + (1000 / stats.frameMs).toFixed(1) + "\n" +
+          "gpu         " + stats.renderer + "\n" +
+          "vendor      " + stats.vendor;
+      }
+    }
+
+    function finishDemo() {
+      if (appState !== "running") {
+        throw new Error("finishDemo() requires the running state, received " + appState + ".");
+      }
+      appState = "ending";
+      ui.stateLabel.textContent = "FINALIZING ARCHIVE";
+      ui.sceneCard.classList.remove("reveal");
+      shutdownRuntime().then(() => {
+        if (appState === "failed") return;
+        if (appState !== "ending") {
+          showFatal(new Error("Archive finalization reached unexpected state " + appState + "."));
+          return;
+        }
+        appState = "ended";
+        ui.stateLabel.textContent = "ARCHIVED";
+        ui.finale.classList.add("visible");
+      }).catch(reason => {
+        const error = normalizeError(reason);
+        showFatal(new Error("Audio shutdown failed during archive finalization: " + error.message));
+      });
+    }
+
+    function renderLoop(now) {
+      animationFrameId = 0;
+      if (appState === "ended" || appState === "failed") return;
+      if (renderer === null) {
+        throw new Error("Animation loop started without a renderer.");
+      }
+      const delta = now - previousFrameTime;
+      previousFrameTime = now;
+      if (delta > 0 && delta < 250) renderer.registerFrameDuration(delta);
+
+      let timelineTime;
+      if (appState === "idle" || appState === "starting") {
+        const previewElapsed = (now - previewStartedAt) / 1000;
+        timelineTime = BAR_SECONDS * 0.7 + (previewElapsed * 0.16) % (BAR_SECONDS * 6.7);
+      } else if (appState === "running" || appState === "paused") {
+        if (audioEngine === null) {
+          throw new Error("Application state " + appState + " requires an initialized audio engine.");
+        }
+        const expectedAudioState = appState === "running" ? "running" : "suspended";
+        const actualAudioState = audioEngine.state();
+        if (actualAudioState !== expectedAudioState) {
+          throw new Error(
+            "Audio state invariant failed: application is " + appState +
+            " but AudioContext is " + actualAudioState + "."
+          );
+        }
+        const audibleTime = audioEngine.time();
+        timelineTime = audibleTime < 0 ? 0 : audibleTime;
+      } else {
+        throw new Error("Animation loop encountered unexpected application state " + appState + ".");
+      }
+
+      let shouldFinish = false;
+      if (appState === "running" && timelineTime >= DURATION) {
+        timelineTime = DURATION - 0.0001;
+        shouldFinish = true;
+      }
+
+      const frame = transportFrame(timelineTime);
+      renderer.render(frame);
+      updateInterface(frame, false);
+      if (shouldFinish) {
+        finishDemo();
+        return;
+      }
+      if (appState === "idle" || appState === "starting" || appState === "running") {
+        animationFrameId = window.requestAnimationFrame(renderLoop);
+      }
+    }
+
+    async function startDemo() {
+      if (appState !== "idle") {
+        throw new Error("Cannot start demo from state " + appState + ".");
+      }
+      if (renderer === null) {
+        throw new Error("Cannot start demo before renderer initialization.");
+      }
+      appState = "starting";
+      ui.start.disabled = true;
+      ui.start.textContent = "Synthesizing score…";
+      ui.requirements.textContent = "Building deterministic signal path";
+      audioEngine = await createAudioEngine();
+      audioEngine.context.addEventListener("statechange", handleAudioStateChange);
+      appState = "running";
+      activeSceneIndex = -1;
+      ui.start.textContent = "Transmission live";
+      ui.gate.classList.add("dismissed");
+      ui.hud.classList.add("visible");
+      ui.stateLabel.textContent = "LIVE · F FULLSCREEN · SPACE PAUSE";
+    }
+
+    function handleAudioStateChange() {
+      if (audioEngine === null) return;
+      const audioState = audioEngine.state();
+      if (appState === "running") {
+        if (audioState !== "running") {
+          showFatal(new Error("AudioContext left running state unexpectedly: " + audioState + "."));
+        }
+        return;
+      }
+      if (appState === "paused") {
+        if (audioState !== "suspended") {
+          showFatal(new Error("AudioContext left suspended state unexpectedly: " + audioState + "."));
+        }
+        return;
+      }
+      if (
+        appState === "starting" || appState === "pausing" || appState === "resuming" ||
+        appState === "ending" || appState === "failed"
+      ) return;
+      showFatal(new Error("AudioContext changed state during invalid application state " + appState + "."));
+    }
+
+    async function togglePause() {
+      if (audioEngine === null) {
+        throw new Error("Pause requested before audio engine initialization.");
+      }
+      if (appState !== "running" && appState !== "paused") {
+        throw new Error("Pause requested from invalid state " + appState + ".");
+      }
+      const suspending = appState === "running";
+      if (animationFrameId !== 0) {
+        window.cancelAnimationFrame(animationFrameId);
+        animationFrameId = 0;
+      }
+      appState = suspending ? "pausing" : "resuming";
+      if (suspending) {
+        await audioEngine.suspend();
+      } else {
+        await audioEngine.resume();
+      }
+      if (suspending && audioEngine.state() === "suspended") {
+        appState = "paused";
+        ui.stateLabel.textContent = "PAUSED · SPACE RESUME";
+      } else if (!suspending && audioEngine.state() === "running") {
+        appState = "running";
+        ui.stateLabel.textContent = "LIVE · F FULLSCREEN · SPACE PAUSE";
+      } else {
+        throw new Error("Audio engine returned unexpected state after pause toggle: " + audioEngine.state());
+      }
+      uiFrameCounter = 4;
+      previousFrameTime = performance.now();
+      animationFrameId = window.requestAnimationFrame(renderLoop);
+      if (animationFrameId === 0) {
+        throw new Error("Browser refused to resume the animation frame after pause toggle.");
+      }
+    }
+
+    async function toggleFullscreen() {
+      if (document.fullscreenElement === null) {
+        await document.documentElement.requestFullscreen();
+      } else {
+        await document.exitFullscreen();
+      }
+    }
+
+    function reportOptionalFullscreenFailure(reason) {
+      const error = normalizeError(reason);
+      ui.stateLabel.textContent = "FULLSCREEN DENIED · DEMO CONTINUES";
+      console.error("Optional fullscreen request failed:", error);
+    }
+
+    function runAsyncAction(action) {
+      action().catch(reason => {
+        showFatal(reason);
+      });
+    }
+
+    ui.start.addEventListener("click", () => runAsyncAction(startDemo));
+    ui.replay.addEventListener("click", () => window.location.reload());
+    ui.reload.addEventListener("click", () => window.location.reload());
+
+    window.addEventListener("keydown", event => {
+      if (event.repeat) return;
+      if (event.code === "Enter" && appState === "idle") {
+        event.preventDefault();
+        runAsyncAction(startDemo);
+      } else if (event.code === "Space" && (appState === "running" || appState === "paused")) {
+        event.preventDefault();
+        runAsyncAction(togglePause);
+      } else if (event.code === "KeyF" && (appState === "running" || appState === "paused")) {
+        event.preventDefault();
+        toggleFullscreen().catch(reportOptionalFullscreenFailure);
+      } else if (event.code === "KeyD") {
+        diagnosticsVisible = !diagnosticsVisible;
+        ui.diagnostics.classList.toggle("visible", diagnosticsVisible);
+      }
+    });
+
+    window.addEventListener("error", event => {
+      showFatal(event.error instanceof Error ? event.error : new Error(event.message));
+    });
+
+    window.addEventListener("unhandledrejection", event => {
+      showFatal(event.reason);
+    });
+
+    ui.canvas.addEventListener("webglcontextlost", event => {
+      event.preventDefault();
+      showFatal(new Error("The WebGL context was lost. Reload is required to rebuild deterministic GPU state."));
+    });
+
+    try {
+      if (configurationError !== null) throw configurationError;
+      if (typeof window.ResizeObserver !== "function") {
+        throw new Error("ResizeObserver is required for safe render-target resizing.");
+      }
+      renderer = createRenderer(ui.canvas, requestedQuality, adaptiveMode && !captureMode, captureMode);
+      resizeObserver = new window.ResizeObserver(() => {
+        if (renderer === null) {
+          throw new Error("Resize observed before renderer initialization completed.");
+        }
+        renderer.resize(false);
+      });
+      resizeObserver.observe(ui.canvas);
+      appState = "idle";
+      ui.start.disabled = false;
+      ui.requirements.textContent = "Ready · 03:24 · F fullscreen · D diagnostics";
+      ui.diagnostics.classList.toggle("visible", diagnosticsVisible);
+      if (captureMode) {
+        document.body.classList.add("capture-mode");
+        ui.gate.classList.add("dismissed");
+        ui.gate.style.display = "none";
+        ui.hud.classList.add("visible");
+        ui.hud.style.opacity = "1";
+        ui.stateLabel.textContent = "DETERMINISTIC CAPTURE";
+        const captureFrame = transportFrame(captureTimelineTime);
+        for (let warmupFrame = 0; warmupFrame < 4; warmupFrame += 1) {
+          renderer.render(captureFrame);
+        }
+        renderer.finish();
+        renderer.copyToCanvas(ui.captureFrame);
+        ui.captureFrame.style.display = "block";
+        updateInterface(captureFrame, true);
+      } else {
+        revealScene(0, false);
+        animationFrameId = window.requestAnimationFrame(renderLoop);
+        if (animationFrameId === 0) {
+          throw new Error("Browser refused to schedule the initial animation frame.");
+        }
+      }
+    } catch (reason) {
+      showFatal(reason);
+    }
+  })();
+  </script>
+</body>
+</html>
