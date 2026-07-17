@@ -1,0 +1,2063 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#03060b">
+  <meta name="description" content="VITREOUS — a self-contained procedural WebGL and Web Audio demoscene production.">
+  <title>VITREOUS — procedural glass</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --ink: #e8fbff;
+      --dim: rgba(215, 243, 255, .52);
+      --line: rgba(188, 235, 255, .2);
+      --cyan: #8aeaff;
+      --violet: #ab9dff;
+      --bg: #020407;
+    }
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: var(--bg); }
+    body {
+      font-family: "Helvetica Neue", "Inter", "Avenir Next", Arial, sans-serif;
+      color: var(--ink);
+      cursor: default;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    button { font: inherit; color: inherit; }
+    #stage, #gl, #veil, #noise { position: fixed; inset: 0; width: 100%; height: 100%; }
+    #stage { isolation: isolate; background: radial-gradient(circle at 50% 45%, #091827 0, #020407 58%); }
+    #gl { display: block; outline: none; }
+    #veil {
+      z-index: 2;
+      pointer-events: none;
+      background: radial-gradient(circle at center, transparent 35%, rgba(0, 2, 5, .25) 72%, rgba(0, 1, 3, .72) 120%);
+      mix-blend-mode: multiply;
+    }
+    #noise {
+      z-index: 3;
+      pointer-events: none;
+      opacity: .038;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.93' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.72'/%3E%3C/svg%3E");
+      animation: grain .22s steps(2) infinite;
+    }
+    @keyframes grain {
+      0% { transform: translate3d(-1.5%, 1%, 0) scale(1.04); }
+      25% { transform: translate3d(1%, -1.5%, 0) scale(1.04); }
+      50% { transform: translate3d(1.5%, 1.2%, 0) scale(1.04); }
+      75% { transform: translate3d(-1%, -1%, 0) scale(1.04); }
+      100% { transform: translate3d(-1.5%, 1%, 0) scale(1.04); }
+    }
+    #gate {
+      position: fixed;
+      z-index: 20;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      border: 0;
+      padding: 0;
+      background: radial-gradient(circle at center, rgba(1, 8, 13, .06), rgba(1, 3, 6, .6));
+      cursor: pointer;
+      transition: opacity 1.2s cubic-bezier(.2,.8,.2,1), visibility 1.2s;
+    }
+    body.running #gate { opacity: 0; visibility: hidden; pointer-events: none; }
+    .gate-inner { position: relative; width: min(78vw, 660px); text-align: center; }
+    .eyebrow {
+      margin: 0 0 1.1rem;
+      color: var(--dim);
+      font: 500 clamp(.58rem, 1.1vw, .7rem)/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: .35em;
+      text-transform: uppercase;
+    }
+    h1 {
+      margin: 0;
+      font-size: clamp(3rem, 10vw, 8rem);
+      font-weight: 200;
+      letter-spacing: .16em;
+      line-height: .9;
+      text-indent: .16em;
+      text-shadow: 0 0 32px rgba(139, 232, 255, .12);
+    }
+    .subtitle {
+      margin: 1.3rem 0 0;
+      color: var(--dim);
+      font-size: clamp(.65rem, 1.4vw, .85rem);
+      font-weight: 300;
+      letter-spacing: .22em;
+      text-transform: uppercase;
+    }
+    .enter-mark {
+      width: 3.3rem;
+      height: 3.3rem;
+      margin: 3.2rem auto 1rem;
+      border: 1px solid rgba(204, 245, 255, .42);
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      position: relative;
+      box-shadow: inset 0 0 22px rgba(128, 225, 255, .08), 0 0 26px rgba(128, 225, 255, .05);
+    }
+    .enter-mark::before, .enter-mark::after {
+      content: "";
+      position: absolute;
+      inset: -.45rem;
+      border: 1px solid rgba(192, 235, 255, .12);
+      border-radius: 50%;
+      animation: breathe 2.8s ease-in-out infinite;
+    }
+    .enter-mark::after { inset: -1rem; opacity: .5; animation-delay: -.8s; }
+    .enter-mark span { width: .34rem; height: .34rem; border-radius: 50%; background: #dcf9ff; box-shadow: 0 0 12px #9cecff; }
+    @keyframes breathe { 50% { transform: scale(1.08); opacity: .25; } }
+    .enter-copy {
+      color: rgba(224, 249, 255, .7);
+      font: 500 .62rem/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: .28em;
+      text-transform: uppercase;
+    }
+    #hud {
+      position: fixed;
+      z-index: 10;
+      inset: 0;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 1.4s 1.2s ease;
+    }
+    body.running #hud { opacity: 1; }
+    .hud-top, .hud-bottom {
+      position: absolute;
+      left: max(1.3rem, env(safe-area-inset-left));
+      right: max(1.3rem, env(safe-area-inset-right));
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font: 500 .58rem/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: .2em;
+      text-transform: uppercase;
+      color: rgba(218, 244, 255, .55);
+      text-shadow: 0 1px 8px #000;
+    }
+    .hud-top { top: max(1.2rem, env(safe-area-inset-top)); }
+    .hud-bottom { bottom: max(1rem, env(safe-area-inset-bottom)); gap: 1.5rem; }
+    .brand { color: rgba(235, 251, 255, .84); letter-spacing: .28em; }
+    .readout { display: flex; align-items: center; gap: 1rem; }
+    #section-number { color: rgba(218, 244, 255, .32); }
+    #section-name { min-width: 8rem; text-align: right; color: rgba(235, 251, 255, .78); }
+    #clock { min-width: 4.5rem; color: rgba(235, 251, 255, .72); }
+    #meter { display: flex; align-items: end; height: 9px; gap: 2px; }
+    #meter i { display: block; width: 2px; height: 100%; background: var(--cyan); opacity: .35; transform-origin: bottom; transition: transform .06s linear; }
+    #progress-shell { position: absolute; left: 0; right: 0; bottom: 0; height: 1px; background: rgba(180, 232, 255, .12); overflow: hidden; }
+    #progress { width: 100%; height: 100%; transform-origin: left; transform: scaleX(0); background: linear-gradient(90deg, var(--cyan), #d1f9ff 58%, var(--violet)); box-shadow: 0 0 8px rgba(133, 233, 255, .7); }
+    #chapter-ticks { position: absolute; inset: 0; }
+    #chapter-ticks i { position: absolute; top: -2px; width: 1px; height: 5px; background: rgba(217, 246, 255, .35); }
+    .controls { white-space: nowrap; }
+    .controls kbd { border: 0; color: rgba(235, 251, 255, .82); font: inherit; }
+    #state-pill { min-width: 6.5rem; text-align: right; color: rgba(216, 245, 255, .72); }
+    #pause-card {
+      position: fixed;
+      z-index: 12;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity .35s ease;
+      background: rgba(1, 4, 8, .12);
+      backdrop-filter: blur(0);
+    }
+    body.paused #pause-card { opacity: 1; backdrop-filter: blur(5px); }
+    #pause-card span { font: 400 .68rem/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .4em; text-transform: uppercase; text-shadow: 0 0 18px #000; }
+    #error {
+      position: fixed;
+      z-index: 30;
+      inset: 0;
+      display: none;
+      place-items: center;
+      padding: 2rem;
+      background: #030609;
+    }
+    #error.visible { display: grid; }
+    .error-card { max-width: 42rem; border: 1px solid var(--line); padding: clamp(1.5rem, 5vw, 3.5rem); background: rgba(10, 18, 25, .8); }
+    .error-card h2 { margin: 0 0 1rem; font-weight: 300; letter-spacing: .1em; }
+    .error-card p, .error-card pre { color: var(--dim); line-height: 1.6; user-select: text; -webkit-user-select: text; }
+    .error-card pre { white-space: pre-wrap; font-size: .7rem; max-height: 30vh; overflow: auto; }
+    @media (max-width: 680px) {
+      h1 { letter-spacing: .08em; text-indent: .08em; }
+      .hud-top, .hud-bottom { letter-spacing: .12em; }
+      .controls { display: none; }
+      #section-name { min-width: 0; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      #noise, .enter-mark::before, .enter-mark::after { animation: none; }
+    }
+  </style>
+</head>
+<body>
+  <main id="stage">
+    <canvas id="gl" aria-label="Procedural animation of transparent glass spheres"></canvas>
+    <div id="veil"></div>
+    <div id="noise"></div>
+
+    <button id="gate" type="button" aria-label="Begin VITREOUS with sound">
+      <span class="gate-inner">
+        <span class="eyebrow">A real-time audiovisual production</span>
+        <h1>VITREOUS</h1>
+        <span class="subtitle">light · pressure · memory</span>
+        <span class="enter-mark" aria-hidden="true"><span></span></span>
+        <span class="enter-copy">Enter refraction</span>
+      </span>
+    </button>
+
+    <section id="hud" aria-live="polite">
+      <div class="hud-top">
+        <span class="brand">Vitreous</span>
+        <span class="readout"><span id="section-number">01 / 06</span><span id="section-name">Seed</span></span>
+      </div>
+      <div class="hud-bottom">
+        <span id="clock">00:00.0</span>
+        <span class="controls"><kbd>Space</kbd> pause&nbsp;&nbsp; <kbd>M</kbd> sound&nbsp;&nbsp; <kbd>Q</kbd> quality&nbsp;&nbsp; <kbd>F</kbd> fullscreen&nbsp;&nbsp; <kbd>R</kbd> restart</span>
+        <span id="meter" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+        <span id="state-pill">HQ · sound</span>
+      </div>
+      <div id="progress-shell"><div id="progress"></div><div id="chapter-ticks"></div></div>
+    </section>
+
+    <div id="pause-card"><span>Suspended</span></div>
+    <section id="error" role="alert">
+      <div class="error-card">
+        <p class="eyebrow" id="error-kicker">Show halted</p>
+        <h2 id="error-title">VITREOUS stopped safely.</h2>
+        <p id="error-copy">A critical engine failure ended the show. Technical details follow.</p>
+        <pre id="error-detail"></pre>
+      </div>
+    </section>
+  </main>
+
+  <script>
+  "use strict";
+
+  // Audio module is injected below. Everything in this file remains standalone.
+  window.VitreousAudio = (() => {
+    const BPM = 128;
+    const BEAT = 60 / BPM;
+    const STEP = BEAT / 4;
+    const BARS = 80;
+    const STEPS = BARS * 16;
+    const LOOKAHEAD = .16;
+    const HARMONY = [
+      { chord: [50, 57, 60, 64, 65], bass: 38 },
+      { chord: [43, 50, 57, 59, 64], bass: 43 },
+      { chord: [48, 55, 59, 62, 64], bass: 36 },
+      { chord: [45, 52, 55, 59, 62], bass: 33 }
+    ];
+    const SCALE = [0, 2, 3, 7, 9, 10, 12, 14, 15, 19];
+
+    let context = null;
+    let musicBus = null;
+    let master = null;
+    let outputMute = null;
+    let analyser = null;
+    let noiseBuffer = null;
+    let impulseBuffer = null;
+    let mixNodes = [];
+    let schedulerId = 0;
+    let startTime = 0;
+    let nextStepTime = 0;
+    let stepIndex = 0;
+    let initialized = false;
+    let started = false;
+    let paused = false;
+    let muted = false;
+    let randomState = 0x51f15e1d;
+    const activeSources = new Set();
+    const visualEvents = [];
+    let spectrum = null;
+
+    function assertReady(operation) {
+      if (!initialized || !context || !musicBus || !master || !outputMute || !analyser) {
+        throw new Error("VITREOUS audio invariant failed during " + operation + ": engine is not initialized.");
+      }
+    }
+
+    function random() {
+      randomState ^= randomState << 13;
+      randomState ^= randomState >>> 17;
+      randomState ^= randomState << 5;
+      return (randomState >>> 0) / 4294967296;
+    }
+
+    function hashStep(value, salt = 0) {
+      let x = (value * 0x45d9f3b + salt * 0x27d4eb2d) | 0;
+      x = Math.imul(x ^ (x >>> 16), 0x45d9f3b);
+      x = Math.imul(x ^ (x >>> 16), 0x45d9f3b);
+      return ((x ^ (x >>> 16)) >>> 0) / 4294967296;
+    }
+
+    function hz(midi) {
+      return 440 * Math.pow(2, (midi - 69) / 12);
+    }
+
+    function connect(node, destination = musicBus) {
+      if (!destination) throw new Error("VITREOUS audio graph invariant failed: missing destination.");
+      node.connect(destination);
+      return node;
+    }
+
+    function startSource(source, when, stopAt, cleanup = []) {
+      if (!(stopAt > when)) throw new Error("VITREOUS voice invariant failed: stop time must follow start time.");
+      activeSources.add(source);
+      source.onended = () => {
+        activeSources.delete(source);
+        source.disconnect();
+        for (const node of cleanup) node.disconnect();
+      };
+      source.start(when);
+      source.stop(stopAt);
+      return source;
+    }
+
+    function envelope(param, when, peak, attack, hold, decay) {
+      const floor = .0001;
+      if (!(peak > floor && attack >= 0 && hold >= 0 && decay > 0)) {
+        throw new Error("VITREOUS envelope invariant failed.");
+      }
+      param.setValueAtTime(floor, when);
+      param.exponentialRampToValueAtTime(peak, when + Math.max(.002, attack));
+      param.setValueAtTime(peak, when + Math.max(.002, attack) + hold);
+      param.exponentialRampToValueAtTime(floor, when + Math.max(.002, attack) + hold + decay);
+    }
+
+    function event(kind, when, attack, decay, amount = 1, hold = 0) {
+      visualEvents.push({ kind, when, attack, decay, amount, hold });
+      if (visualEvents.length > 512) visualEvents.splice(0, visualEvents.length - 512);
+    }
+
+    function createNoiseBuffer(seconds, decay = 0) {
+      const length = Math.ceil(context.sampleRate * seconds);
+      const buffer = context.createBuffer(2, length, context.sampleRate);
+      for (let channel = 0; channel < 2; channel++) {
+        const data = buffer.getChannelData(channel);
+        for (let i = 0; i < length; i++) {
+          const falloff = decay > 0 ? Math.pow(1 - i / length, decay) : 1;
+          data[i] = (random() * 2 - 1) * falloff;
+        }
+      }
+      return buffer;
+    }
+
+    function stereoPan(value) {
+      const panner = context.createStereoPanner();
+      panner.pan.value = Math.max(-1, Math.min(1, value));
+      return panner;
+    }
+
+    function kick(when, amount = 1) {
+      const gain = context.createGain();
+      gain.gain.setValueAtTime(.0001, when);
+      gain.gain.exponentialRampToValueAtTime(.72 * amount, when + .004);
+      gain.gain.exponentialRampToValueAtTime(.0001, when + .34);
+      connect(gain);
+
+      const body = context.createOscillator();
+      body.type = "sine";
+      body.frequency.setValueAtTime(156, when);
+      body.frequency.exponentialRampToValueAtTime(49, when + .085);
+      body.frequency.exponentialRampToValueAtTime(43, when + .28);
+      body.connect(gain);
+      startSource(body, when, when + .36, [gain]);
+
+      const clickSource = context.createBufferSource();
+      clickSource.buffer = noiseBuffer;
+      const clickFilter = context.createBiquadFilter();
+      clickFilter.type = "highpass";
+      clickFilter.frequency.value = 5600;
+      const clickGain = context.createGain();
+      envelope(clickGain.gain, when, .075 * amount, .002, 0, .022);
+      clickSource.connect(clickFilter).connect(clickGain).connect(musicBus);
+      startSource(clickSource, when, when + .035, [clickFilter, clickGain]);
+      event("kick", when, .004, .34, amount);
+    }
+
+    function snare(when, amount = 1) {
+      const source = context.createBufferSource();
+      source.buffer = noiseBuffer;
+      const band = context.createBiquadFilter();
+      band.type = "bandpass";
+      band.frequency.value = 1850;
+      band.Q.value = .62;
+      const gain = context.createGain();
+      envelope(gain.gain, when, .22 * amount, .004, .012, .18);
+      source.connect(band).connect(gain).connect(musicBus);
+      startSource(source, when, when + .24, [band, gain]);
+
+      const tone = context.createOscillator();
+      const toneGain = context.createGain();
+      tone.type = "triangle";
+      tone.frequency.setValueAtTime(196, when);
+      tone.frequency.exponentialRampToValueAtTime(112, when + .09);
+      envelope(toneGain.gain, when, .07 * amount, .003, 0, .11);
+      tone.connect(toneGain).connect(musicBus);
+      startSource(tone, when, when + .14, [toneGain]);
+      event("snare", when, .004, .24, amount);
+    }
+
+    function hat(when, amount = 1, open = false) {
+      const source = context.createBufferSource();
+      source.buffer = noiseBuffer;
+      const high = context.createBiquadFilter();
+      high.type = "highpass";
+      high.frequency.value = open ? 6100 : 7600;
+      const peak = context.createBiquadFilter();
+      peak.type = "peaking";
+      peak.frequency.value = 10200;
+      peak.Q.value = 1.1;
+      peak.gain.value = 5;
+      const gain = context.createGain();
+      const length = open ? .19 : .048;
+      envelope(gain.gain, when, (open ? .055 : .038) * amount, .002, 0, length);
+      source.connect(high).connect(peak).connect(gain).connect(musicBus);
+      startSource(source, when, when + length + .02, [high, peak, gain]);
+      event("high", when, .002, length, amount * .45);
+    }
+
+    function bass(when, midi, duration = .42, amount = 1) {
+      const filter = context.createBiquadFilter();
+      filter.type = "lowpass";
+      filter.Q.value = 7.5;
+      filter.frequency.setValueAtTime(105, when);
+      filter.frequency.exponentialRampToValueAtTime(390 + amount * 520, when + .045);
+      filter.frequency.exponentialRampToValueAtTime(115, when + duration);
+      const gain = context.createGain();
+      envelope(gain.gain, when, .13 * amount, .008, Math.max(0, duration - .12), .16);
+      filter.connect(gain).connect(musicBus);
+
+      const sub = context.createOscillator();
+      sub.type = "sine";
+      sub.frequency.value = hz(midi);
+      sub.connect(filter);
+      startSource(sub, when, when + duration + .2);
+
+      const edge = context.createOscillator();
+      edge.type = "sawtooth";
+      edge.frequency.value = hz(midi) * 2;
+      const edgeGain = context.createGain();
+      edgeGain.gain.value = .16;
+      edge.connect(edgeGain).connect(filter);
+      startSource(edge, when, when + duration + .21, [edgeGain, filter, gain]);
+      event("bass", when, .012, .16, amount, Math.max(0, duration - .12));
+    }
+
+    function glass(when, midi, amount = 1, pan = 0, long = false) {
+      const frequency = hz(midi);
+      const panner = stereoPan(pan);
+      panner.connect(musicBus);
+      const gain = context.createGain();
+      const decay = long ? 2.2 : .82;
+      envelope(gain.gain, when, .105 * amount, .003, 0, decay);
+      gain.connect(panner);
+
+      const carrier = context.createOscillator();
+      carrier.type = "sine";
+      carrier.frequency.value = frequency;
+      const modulator = context.createOscillator();
+      modulator.type = "sine";
+      modulator.frequency.value = frequency * 2.71;
+      const modulation = context.createGain();
+      modulation.gain.setValueAtTime(frequency * 1.8 * amount, when);
+      modulation.gain.exponentialRampToValueAtTime(.01, when + .13);
+      modulator.connect(modulation).connect(carrier.frequency);
+      carrier.connect(gain);
+
+      const partial = context.createOscillator();
+      partial.type = "sine";
+      partial.frequency.value = frequency * 3.93;
+      const partialGain = context.createGain();
+      envelope(partialGain.gain, when, .022 * amount, .002, 0, decay * .38);
+      partial.connect(partialGain).connect(panner);
+
+      startSource(carrier, when, when + decay + .08, [gain, panner]);
+      startSource(modulator, when, when + .2, [modulation]);
+      startSource(partial, when, when + decay * .5, [partialGain]);
+      event("glass", when, .003, long ? 1.35 : .62, amount);
+    }
+
+    function pad(when, notes, duration, brightness = 1) {
+      const panner = stereoPan(Math.sin(when * .13) * .22);
+      panner.connect(musicBus);
+      const gain = context.createGain();
+      envelope(gain.gain, when, .018, .85, Math.max(0, duration - 1.75), .9);
+      gain.connect(panner);
+      const filter = context.createBiquadFilter();
+      filter.type = "lowpass";
+      filter.Q.value = .7;
+      filter.frequency.setValueAtTime(540 + brightness * 260, when);
+      filter.frequency.linearRampToValueAtTime(1150 + brightness * 720, when + duration * .7);
+      filter.connect(gain);
+
+      notes.forEach((note, index) => {
+        const oscillator = context.createOscillator();
+        oscillator.type = index % 2 ? "triangle" : "sine";
+        oscillator.frequency.value = hz(note);
+        oscillator.detune.value = (index - 2) * 3.1;
+        oscillator.connect(filter);
+        const isCleanupVoice = index === notes.length - 1;
+        startSource(oscillator, when, when + duration + (isCleanupVoice ? 1.01 : 1),
+          isCleanupVoice ? [filter, gain, panner] : []);
+      });
+      event("mid", when, .9, .9, .32 * brightness, Math.max(0, duration - 1.75));
+    }
+
+    function atmosphere(when, duration, section) {
+      const source = context.createBufferSource();
+      source.buffer = noiseBuffer;
+      source.loop = true;
+      const band = context.createBiquadFilter();
+      band.type = "bandpass";
+      band.Q.value = 1.6;
+      band.frequency.setValueAtTime(260 + section * 170, when);
+      band.frequency.exponentialRampToValueAtTime(1700 + section * 230, when + duration);
+      const gain = context.createGain();
+      envelope(gain.gain, when, .018 + section * .002, .7, Math.max(0, duration - 1.5), .8);
+      const panner = stereoPan(section % 2 ? .55 : -.55);
+      source.connect(band).connect(gain).connect(panner).connect(musicBus);
+      startSource(source, when, when + duration + .1, [band, gain, panner]);
+    }
+
+    function sectionForBar(bar) {
+      if (bar < 8) return 0;
+      if (bar < 24) return 1;
+      if (bar < 40) return 2;
+      if (bar < 56) return 3;
+      if (bar < 72) return 4;
+      return 5;
+    }
+
+    function scheduleStep(absoluteStep, when) {
+      const loopStep = absoluteStep % STEPS;
+      const bar = Math.floor(loopStep / 16);
+      const position = loopStep % 16;
+      const section = sectionForBar(bar);
+      const localBar = section === 0 ? bar
+        : section === 1 ? bar - 8
+        : section === 2 ? bar - 24
+        : section === 3 ? bar - 40
+        : section === 4 ? bar - 56
+        : bar - 72;
+      const harmony = HARMONY[Math.floor(bar / 2) % HARMONY.length];
+      const density = hashStep(loopStep, 7);
+
+      if (position === 0 && bar % 2 === 0) {
+        const lift = section === 4 ? 12 : section === 5 && localBar < 4 ? 7 : 0;
+        pad(when, harmony.chord.map((note, i) => note + (i > 2 ? lift : 0)), BEAT * 8.1, .65 + section * .09);
+      }
+      if (position === 0 && bar % 8 === 0) atmosphere(when, BEAT * 15.5, section);
+
+      if (section === 0) {
+        if (localBar >= 3 && position === 0) bass(when, harmony.bass, .72, .55);
+        if ((position === 3 || position === 11) && (bar + position) % 3 !== 0) {
+          glass(when, 74 + SCALE[(bar + position) % SCALE.length], .48 + density * .25, density * 1.6 - .8, true);
+        }
+        if (localBar >= 6 && position === 0) kick(when, .42);
+      } else if (section === 1) {
+        if (position === 0 || position === 8 || (localBar > 7 && position === 12)) kick(when, .68);
+        if (position === 4 || position === 12) snare(when, .62);
+        if (position % 4 === 2) hat(when, .68 + density * .2, position === 14);
+        if (position === 0 || position === 6 || position === 10) {
+          bass(when, harmony.bass + (position === 10 ? 7 : 0), .36, .72);
+        }
+        if (((position * 5) % 16) < 5 && density > .26) {
+          glass(when, 69 + SCALE[(loopStep + bar) % SCALE.length], .52, density * 1.5 - .75, false);
+        }
+      } else if (section === 2) {
+        if (position % 4 === 0) kick(when, position === 0 ? .9 : .72);
+        if (position === 4 || position === 12) snare(when, .78);
+        if (position % 2 === 0) hat(when, .7 + density * .22, position === 14);
+        if ([0, 3, 6, 10, 12].includes(position)) {
+          bass(when, harmony.bass + (position === 6 ? 12 : position === 10 ? 7 : 0), .29, .82);
+        }
+        if (position % 2 === 1) {
+          glass(when, 72 + SCALE[(loopStep * 3 + bar) % SCALE.length], .38 + density * .23, Math.sin(loopStep * 1.7) * .72, false);
+        }
+      } else if (section === 3) {
+        const returning = localBar >= 8;
+        if (returning && (position === 0 || position === 8)) kick(when, .62 + (localBar - 8) * .025);
+        if (returning && position === 12) snare(when, .52);
+        if (returning && position % 4 === 2) hat(when, .42 + density * .18, false);
+        if (position === 0 || position === 10) bass(when, harmony.bass - 12, .9, .46);
+        if ([1, 5, 9, 13].includes(position) && density > .18) {
+          glass(when, 81 + SCALE[(bar + position * 2) % SCALE.length], .46, Math.cos(loopStep) * .8, true);
+        }
+      } else if (section === 4) {
+        if (position % 4 === 0 || position === 10) kick(when, position === 0 ? 1 : .79);
+        if (position === 4 || position === 12) snare(when, .88);
+        if (position % 2 === 0 || (localBar >= 8 && density > .55)) hat(when, .72 + density * .28, position === 14);
+        if ([0, 3, 6, 8, 10, 14].includes(position)) {
+          bass(when, harmony.bass + (position === 6 || position === 14 ? 12 : 0), .25, .92);
+        }
+        if (position % 2 === 1 || density > .78) {
+          glass(when, 74 + SCALE[(loopStep * 5 + localBar) % SCALE.length], .42 + density * .26, Math.sin(loopStep * 2.4) * .9, false);
+        }
+      } else {
+        const dissolve = Math.max(.12, 1 - localBar / 7.2);
+        if (localBar < 4 && position % 4 === 0) kick(when, .78 * dissolve);
+        if (localBar < 4 && (position === 4 || position === 12)) snare(when, .58 * dissolve);
+        if (localBar < 5 && position % 4 === 2) hat(when, .45 * dissolve, false);
+        if (position === 0 || (localBar < 4 && position === 10)) bass(when, harmony.bass, .55, .62 * dissolve);
+        if ((position === 1 || position === 6 || position === 13) && density > localBar / 10) {
+          glass(when, 81 + SCALE[(bar + position) % SCALE.length], .55 * dissolve + .18, density * 1.4 - .7, true);
+        }
+        if (bar === 79 && position === 12) glass(when, 86, .42, 0, true);
+      }
+    }
+
+    function scheduler() {
+      if (!started || paused) return;
+      assertReady("scheduler");
+      if (nextStepTime < context.currentTime - STEP) {
+        stepIndex = Math.max(0, Math.ceil((context.currentTime - startTime) / STEP));
+        nextStepTime = startTime + stepIndex * STEP;
+      }
+      while (nextStepTime < context.currentTime + LOOKAHEAD) {
+        scheduleStep(stepIndex, nextStepTime);
+        nextStepTime += STEP;
+        stepIndex++;
+      }
+    }
+
+    function buildMixGraph() {
+      if (!context || !master || !impulseBuffer) {
+        throw new Error("VITREOUS mix invariant failed: output graph prerequisites are missing.");
+      }
+      for (const node of mixNodes) node.disconnect();
+
+      musicBus = context.createGain();
+      musicBus.gain.value = .82;
+      const dry = context.createGain();
+      dry.gain.value = .92;
+      const wetHighpass = context.createBiquadFilter();
+      wetHighpass.type = "highpass";
+      wetHighpass.frequency.value = 240;
+      wetHighpass.Q.value = .55;
+      const delay = context.createDelay(1);
+      delay.delayTime.value = BEAT * .75;
+      const feedback = context.createGain();
+      feedback.gain.value = .23;
+      const delayReturn = context.createGain();
+      delayReturn.gain.value = .18;
+      const convolver = context.createConvolver();
+      convolver.buffer = impulseBuffer;
+      const reverbReturn = context.createGain();
+      reverbReturn.gain.value = .17;
+
+      musicBus.connect(dry).connect(master);
+      musicBus.connect(wetHighpass);
+      wetHighpass.connect(delay);
+      delay.connect(feedback).connect(delay);
+      delay.connect(delayReturn).connect(master);
+      wetHighpass.connect(convolver).connect(reverbReturn).connect(master);
+      mixNodes = [musicBus, dry, wetHighpass, delay, feedback, delayReturn, convolver, reverbReturn];
+    }
+
+    function resetTransport(flushEffects = false) {
+      for (const source of activeSources) source.stop();
+      activeSources.clear();
+      visualEvents.length = 0;
+      if (flushEffects) buildMixGraph();
+      randomState = 0x51f15e1d;
+      stepIndex = 0;
+      startTime = context.currentTime + .075;
+      nextStepTime = startTime;
+      scheduler();
+      if (!(nextStepTime > startTime)) {
+        throw new Error("VITREOUS transport invariant failed: scheduler did not advance.");
+      }
+    }
+
+    function schedulerBoundary() {
+      try {
+        scheduler();
+      } catch (cause) {
+        if (schedulerId) window.clearInterval(schedulerId);
+        schedulerId = 0;
+        for (const source of activeSources) source.stop();
+        activeSources.clear();
+        started = false;
+        paused = true;
+        throw new Error("VITREOUS audio scheduler aborted after a critical failure.", { cause });
+      }
+    }
+
+    async function init() {
+      if (initialized) return api;
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextClass) throw new Error("Web Audio is unavailable in this browser.");
+      try {
+        context = new AudioContextClass({ latencyHint: "interactive" });
+
+        master = context.createGain();
+        master.gain.value = .72;
+        const compressor = context.createDynamicsCompressor();
+        compressor.threshold.value = -13;
+        compressor.knee.value = 9;
+        compressor.ratio.value = 4;
+        compressor.attack.value = .006;
+        compressor.release.value = .19;
+        analyser = context.createAnalyser();
+        analyser.fftSize = 1024;
+        analyser.smoothingTimeConstant = .72;
+        spectrum = new Uint8Array(analyser.frequencyBinCount);
+        outputMute = context.createGain();
+        outputMute.gain.value = 1;
+        master.connect(compressor).connect(analyser).connect(outputMute).connect(context.destination);
+        impulseBuffer = createNoiseBuffer(2.8, 2.6);
+        noiseBuffer = createNoiseBuffer(2);
+        buildMixGraph();
+
+        schedulerId = window.setInterval(schedulerBoundary, 25);
+        initialized = true;
+        return api;
+      } catch (cause) {
+        if (schedulerId) window.clearInterval(schedulerId);
+        schedulerId = 0;
+        for (const source of activeSources) source.stop();
+        activeSources.clear();
+        for (const node of mixNodes) node.disconnect();
+        mixNodes = [];
+        let closeFailure = null;
+        if (context && context.state !== "closed") {
+          try {
+            await context.close();
+          } catch (error) {
+            closeFailure = error;
+          }
+        }
+        context = null;
+        musicBus = null;
+        master = null;
+        outputMute = null;
+        analyser = null;
+        noiseBuffer = null;
+        impulseBuffer = null;
+        spectrum = null;
+        initialized = false;
+        started = false;
+        paused = false;
+        muted = false;
+        if (closeFailure) {
+          throw new AggregateError([cause, closeFailure], "Audio initialization and rollback both failed.");
+        }
+        throw new Error("Audio initialization failed and was rolled back.", { cause });
+      }
+    }
+
+    async function start() {
+      assertReady("start");
+      if (started) return api;
+      await context.resume();
+      if (context.state !== "running") throw new Error("AudioContext failed to enter the running state.");
+      started = true;
+      paused = false;
+      resetTransport();
+      return api;
+    }
+
+    async function togglePause() {
+      assertReady("pause");
+      if (!started) throw new Error("Cannot pause VITREOUS before starting it.");
+      if (paused) {
+        await context.resume();
+        if (context.state !== "running") throw new Error("AudioContext failed to resume.");
+        paused = false;
+        scheduler();
+      } else {
+        await context.suspend();
+        if (context.state !== "suspended") throw new Error("AudioContext failed to suspend.");
+        paused = true;
+      }
+      return paused;
+    }
+
+    function toggleMute() {
+      assertReady("mute");
+      if (!started) throw new Error("Cannot mute VITREOUS before starting it.");
+      muted = !muted;
+      outputMute.gain.cancelScheduledValues(context.currentTime);
+      outputMute.gain.setTargetAtTime(muted ? 0 : 1, context.currentTime, .018);
+      return muted;
+    }
+
+    async function restart() {
+      assertReady("restart");
+      if (!started) throw new Error("Cannot restart VITREOUS before starting it.");
+      if (context.state === "suspended") await context.resume();
+      if (context.state !== "running") throw new Error("AudioContext failed to run during restart.");
+      paused = false;
+      resetTransport(true);
+      return true;
+    }
+
+    function getTime() {
+      assertReady("getTime");
+      if (!started) return 0;
+      return Math.max(0, context.currentTime - startTime);
+    }
+
+    function frequencyAverage(minHz, maxHz) {
+      const nyquist = context.sampleRate * .5;
+      const first = Math.max(0, Math.floor(minHz / nyquist * spectrum.length));
+      const last = Math.min(spectrum.length - 1, Math.ceil(maxHz / nyquist * spectrum.length));
+      let sum = 0;
+      for (let i = first; i <= last; i++) sum += spectrum[i];
+      return sum / Math.max(1, last - first + 1) / 255;
+    }
+
+    function eventEnvelope(kind, now) {
+      let value = 0;
+      for (const item of visualEvents) {
+        if (item.kind !== kind) continue;
+        const age = now - item.when;
+        if (age < 0) continue;
+        const attackLevel = Math.min(1, age / Math.max(.001, item.attack));
+        const releaseAge = Math.max(0, age - item.attack - item.hold);
+        value += attackLevel * Math.exp(-releaseAge / item.decay) * item.amount;
+      }
+      return Math.min(1.5, value);
+    }
+
+    function getReactive() {
+      assertReady("reactivity");
+      analyser.getByteFrequencyData(spectrum);
+      const now = context.currentTime;
+      while (visualEvents.length && visualEvents[0].when < now - 10) visualEvents.shift();
+      const kickLevel = eventEnvelope("kick", now);
+      const snareLevel = eventEnvelope("snare", now);
+      const glassLevel = eventEnvelope("glass", now);
+      const bassLevel = eventEnvelope("bass", now);
+      const hatLevel = eventEnvelope("high", now);
+      const padLevel = eventEnvelope("mid", now);
+      return {
+        kick: Math.min(1, kickLevel),
+        snare: Math.min(1, snareLevel),
+        glass: Math.min(1, glassLevel),
+        bass: Math.min(1, bassLevel),
+        low: Math.min(1, frequencyAverage(30, 190) * 1.7 + kickLevel * .48 + bassLevel * .36),
+        mid: Math.min(1, frequencyAverage(190, 2400) * 1.75 + snareLevel * .22 + padLevel * .18),
+        high: Math.min(1, frequencyAverage(2400, 12000) * 2.1 + glassLevel * .28 + hatLevel * .22)
+      };
+    }
+
+    async function destroy() {
+      if (!initialized || !context) throw new Error("Cannot destroy an uninitialized VITREOUS audio engine.");
+      if (schedulerId) window.clearInterval(schedulerId);
+      schedulerId = 0;
+      for (const source of activeSources) source.stop();
+      activeSources.clear();
+      for (const node of mixNodes) node.disconnect();
+      mixNodes = [];
+      await context.close();
+      if (context.state !== "closed") throw new Error("AudioContext failed to close.");
+      context = null;
+      musicBus = null;
+      master = null;
+      outputMute = null;
+      analyser = null;
+      noiseBuffer = null;
+      impulseBuffer = null;
+      spectrum = null;
+      initialized = false;
+      started = false;
+      paused = false;
+      muted = false;
+    }
+
+    const api = { init, start, togglePause, toggleMute, restart, getTime, getReactive, destroy };
+    return api;
+  })();
+
+  (() => {
+    const SHOW_DURATION = 150;
+    const SECTIONS = [
+      { name: "Seed", start: 0 },
+      { name: "Orbit", start: 15 },
+      { name: "Crystal Rain", start: 45 },
+      { name: "Cathedral", start: 75 },
+      { name: "Singularity", start: 105 },
+      { name: "Reassembly", start: 135 }
+    ];
+    const QUALITY = [
+      { label: "ECO", scale: .52, steps: .35 },
+      { label: "HQ", scale: .72, steps: .88 },
+      { label: "ULTRA", scale: .92, steps: 1.0 }
+    ];
+
+    const ui = {
+      canvas: document.querySelector("#gl"),
+      gate: document.querySelector("#gate"),
+      progress: document.querySelector("#progress"),
+      ticks: document.querySelector("#chapter-ticks"),
+      sectionNumber: document.querySelector("#section-number"),
+      sectionName: document.querySelector("#section-name"),
+      clock: document.querySelector("#clock"),
+      meter: [...document.querySelectorAll("#meter i")],
+      state: document.querySelector("#state-pill"),
+      error: document.querySelector("#error"),
+      errorTitle: document.querySelector("#error-title"),
+      errorDetail: document.querySelector("#error-detail")
+    };
+
+    let renderer;
+    let audio;
+    let started = false;
+    let paused = false;
+    let muted = false;
+    let failed = false;
+    let frameRequest = 0;
+    let statusNotice = "";
+    let statusNoticeUntil = 0;
+    let qualityIndex = 1;
+    let idleOrigin = performance.now() * .001;
+
+    for (const section of SECTIONS.slice(1)) {
+      const tick = document.createElement("i");
+      tick.style.left = `${section.start / SHOW_DURATION * 100}%`;
+      ui.ticks.append(tick);
+    }
+
+    function fatal(message, detail = "") {
+      if (failed) {
+        console.error("Additional failure after VITREOUS entered its terminal state:", message, detail);
+        return;
+      }
+      failed = true;
+      if (frameRequest) cancelAnimationFrame(frameRequest);
+      frameRequest = 0;
+      ui.gate.disabled = true;
+      document.body.classList.add("failed");
+      ui.error.classList.add("visible");
+      ui.errorTitle.textContent = message;
+      ui.errorDetail.textContent = `${message}${detail ? `\n\n${detail}` : ""}`;
+      console.error(message, detail);
+      if (renderer) {
+        try {
+          renderer.destroy();
+          renderer = null;
+        } catch (cleanupError) {
+          ui.errorDetail.textContent += `\n\nRenderer cleanup failed:\n${cleanupError?.stack || String(cleanupError)}`;
+          window.setTimeout(() => { throw cleanupError; }, 0);
+        }
+      }
+      if (audio) {
+        const cleanup = audio.destroy();
+        cleanup.then(() => { audio = null; }).catch(cleanupError => {
+          ui.errorDetail.textContent += `\n\nCleanup failed:\n${cleanupError?.stack || String(cleanupError)}`;
+          window.setTimeout(() => { throw cleanupError; }, 0);
+        });
+      }
+    }
+
+    function currentSection(t) {
+      for (let i = SECTIONS.length - 1; i >= 0; i--) {
+        if (t >= SECTIONS[i].start) return i;
+      }
+      return 0;
+    }
+
+    function sectionCoordinate(t) {
+      const index = currentSection(t);
+      const a = SECTIONS[index].start;
+      const b = index === SECTIONS.length - 1 ? SHOW_DURATION : SECTIONS[index + 1].start;
+      return index + Math.min(.999, Math.max(0, (t - a) / (b - a)));
+    }
+
+    function formatTime(seconds) {
+      const minutes = Math.floor(seconds / 60);
+      const secs = seconds - minutes * 60;
+      return `${String(minutes).padStart(2, "0")}:${secs.toFixed(1).padStart(4, "0")}`;
+    }
+
+    function updateHud(t, reactive) {
+      const loopTime = ((t % SHOW_DURATION) + SHOW_DURATION) % SHOW_DURATION;
+      const section = currentSection(loopTime);
+      ui.progress.style.transform = `scaleX(${loopTime / SHOW_DURATION})`;
+      ui.sectionNumber.textContent = `${String(section + 1).padStart(2, "0")} / 06`;
+      ui.sectionName.textContent = SECTIONS[section].name;
+      ui.clock.textContent = formatTime(loopTime);
+      const levels = [reactive.low, reactive.mid, reactive.high, Math.max(reactive.glass, reactive.kick)];
+      ui.meter.forEach((bar, i) => { bar.style.transform = `scaleY(${.15 + Math.min(1, levels[i] || 0) * .85})`; });
+      ui.state.textContent = performance.now() < statusNoticeUntil
+        ? statusNotice
+        : `${QUALITY[qualityIndex].label} · ${muted ? "muted" : "sound"}`;
+    }
+
+    async function start() {
+      if (started || failed) return;
+      try {
+        if (!window.VitreousAudio) throw new Error("Audio module is missing.");
+        audio = await window.VitreousAudio.init();
+        if (!audio) throw new Error("Audio module returned an invalid engine.");
+        await audio.start();
+        started = true;
+        document.body.classList.add("running");
+        ui.gate.setAttribute("aria-hidden", "true");
+      } catch (error) {
+        fatal("Could not start the audiovisual engine.", error?.stack || String(error));
+        throw error;
+      }
+    }
+
+    async function togglePause() {
+      if (!started || !audio) return;
+      paused = await audio.togglePause();
+      document.body.classList.toggle("paused", paused);
+    }
+
+    function toggleMute() {
+      if (!started || !audio) return;
+      muted = audio.toggleMute();
+      updateHud(audio.getTime(), audio.getReactive());
+    }
+
+    async function restart() {
+      if (!started || !audio) return;
+      await audio.restart();
+      paused = false;
+      document.body.classList.remove("paused");
+    }
+
+    function cycleQuality() {
+      if (!renderer) throw new Error("Cannot change quality without an initialized renderer.");
+      qualityIndex = (qualityIndex + 1) % QUALITY.length;
+      renderer.setQuality(QUALITY[qualityIndex]);
+    }
+
+    function showStatusNotice(message) {
+      statusNotice = message;
+      statusNoticeUntil = performance.now() + 2200;
+      ui.state.textContent = message;
+    }
+
+    async function toggleFullscreen() {
+      try {
+        if (!document.fullscreenElement) {
+          if (typeof document.documentElement.requestFullscreen !== "function") {
+            showStatusNotice("fullscreen unavailable");
+            return false;
+          }
+          await document.documentElement.requestFullscreen();
+        } else {
+          if (typeof document.exitFullscreen !== "function") {
+            showStatusNotice("fullscreen unavailable");
+            return false;
+          }
+          await document.exitFullscreen();
+        }
+        showStatusNotice(document.fullscreenElement ? "fullscreen" : "windowed");
+        return true;
+      } catch (error) {
+        showStatusNotice("fullscreen declined");
+        console.warn("Fullscreen request declined:", error);
+        return false;
+      }
+    }
+
+    ui.gate.addEventListener("click", start);
+    addEventListener("keydown", async event => {
+      if (failed) return;
+      try {
+        if (event.code === "Space") { event.preventDefault(); await togglePause(); }
+        else if (event.key.toLowerCase() === "m") toggleMute();
+        else if (event.key.toLowerCase() === "r") await restart();
+        else if (event.key.toLowerCase() === "q") cycleQuality();
+        else if (event.key.toLowerCase() === "f") await toggleFullscreen();
+      } catch (error) {
+        fatal("A show-control command failed.", error?.stack || String(error));
+        throw error;
+      }
+    });
+    addEventListener("error", event => {
+      if (!failed) fatal("An uncaught engine error stopped the show.", event.error?.stack || event.message);
+    });
+    addEventListener("unhandledrejection", event => {
+      if (!failed) fatal("An unhandled asynchronous error stopped the show.", event.reason?.stack || String(event.reason));
+    });
+
+    const VERTEX_SHADER = `#version 300 es
+    precision highp float;
+    out vec2 vUv;
+    void main() {
+      vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
+      vUv = p;
+      gl_Position = vec4(p * 2. - 1., 0., 1.);
+    }`;
+
+    const SCENE_SHADER = String.raw`#version 300 es
+
+precision highp float;
+precision highp int;
+
+uniform vec2  uResolution;
+uniform float uTime;
+uniform vec4  uAudio;      // bass, mid, treble, transient / beat
+uniform float uSection;    // 0 .. 5
+uniform float uQuality;    // 0 .. 1; enables the secondary glass ray above 0.45
+
+out vec4 fragColor;
+
+const float PI      = 3.14159265358979323846;
+const float TAU     = 6.28318530717958647692;
+const float GOLDEN  = 2.39996322972865332223;
+const float EPSILON = 0.002;
+const int   MAX_SPHERES = 24;
+
+float saturate(float x) { return clamp(x, 0.0, 1.0); }
+
+mat2 rotate2(float a) {
+    float c = cos(a);
+    float s = sin(a);
+    return mat2(c, -s, s, c);
+}
+
+float hash11(float p) {
+    p = fract(p * 0.1031);
+    p *= p + 33.33;
+    p *= p + p;
+    return fract(p);
+}
+
+float hash31(vec3 p) {
+    p = fract(p * 0.1031);
+    p += dot(p, p.yzx + 33.33);
+    return fract((p.x + p.y) * p.z);
+}
+
+vec3 spectral(float t) {
+    vec3 p = 0.54 + 0.46 * cos(TAU * (t + vec3(0.00, 0.68, 0.36)));
+    return max(p, 0.035);
+}
+
+vec3 sectionColor(int section, float phase) {
+    if (section == 0) return spectral(0.55 + phase * 0.10);
+    if (section == 1) return spectral(0.78 + phase * 0.15);
+    if (section == 2) return spectral(0.40 + phase * 0.18);
+    if (section == 3) return spectral(0.11 + phase * 0.07);
+    if (section == 4) return spectral(0.88 + phase * 0.09);
+    return spectral(0.60 + phase * 0.34);
+}
+
+vec4 audioLevel() {
+    // Compress arbitrary analyser magnitudes without making a missing analyser fatal.
+    vec4 a = max(uAudio, vec4(0.0));
+    return a / (1.0 + a);
+}
+
+/*
+    The scene is deliberately data-free: every ball is reconstructed from its
+    integer index.  This is friendlier to WebGL drivers than uniform struct arrays
+    and keeps the entire production in one fragment program.
+*/
+void sphereForIndex(
+    int index,
+    int section,
+    out vec3 center,
+    out float radius,
+    out vec3 absorption,
+    out float seed
+) {
+    float fi = float(index);
+    vec4 audio = audioLevel();
+    float bass = audio.x;
+    float beat = max(audio.w, bass * 0.72);
+    seed = hash11(fi * 17.13 + float(section) * 91.7);
+    center = vec3(0.0);
+    radius = 0.0;
+
+    if (section == 0) {
+        // I. Nucleation: a calm, monumental lens with a living atomic halo.
+        if (index == 0) {
+            center = vec3(0.0, 0.08 * sin(uTime * 0.7), 0.0);
+            radius = 1.52 + 0.11 * beat;
+        } else {
+            float f = float(index - 1);
+            float a = GOLDEN * f + uTime * (0.13 + 0.025 * mod(f, 3.0));
+            float ring = 2.38 + 0.38 * sin(f * 1.71 + uTime * 0.23);
+            center = vec3(cos(a) * ring,
+                          sin(a * 1.61 + f * 0.4) * 1.18,
+                          sin(a) * ring * 0.58);
+            radius = 0.22 + 0.22 * seed + 0.07 * beat;
+        }
+    } else if (section == 1) {
+        // II. Orbitarium: three mutually inclined clockwork orbits.
+        if (index == 0) {
+            center = vec3(0.0);
+            radius = 0.92 + 0.14 * beat;
+        } else {
+            int ringIndex = (index - 1) % 3;
+            int slot = (index - 1) / 3;
+            float fr = float(ringIndex);
+            float a = TAU * (float(slot) / 8.0) + fr * 0.73
+                    + uTime * (0.27 + fr * 0.11) * (ringIndex == 1 ? -1.0 : 1.0);
+            float ring = 2.15 + fr * 0.47 + 0.12 * bass;
+            center = vec3(cos(a) * ring, 0.15 * sin(a * 3.0), sin(a) * ring);
+            if (ringIndex == 1) center.xy = rotate2(0.94) * center.xy;
+            if (ringIndex == 2) center.yz = rotate2(1.07) * center.yz;
+            radius = 0.28 + 0.17 * seed + (ringIndex == 1 ? 0.10 : 0.0);
+        }
+    } else if (section == 2) {
+        // III. Crystal rain: parallax columns falling at independent tempi.
+        int column = index % 6;
+        int layer = index / 6;
+        float fc = float(column) - 2.5;
+        float fl = float(layer);
+        float speed = 0.72 + 0.31 * hash11(fi * 4.7);
+        float fall = mod(fl * 2.27 + fi * 0.43 - uTime * speed * (1.0 + bass), 8.8) - 4.4;
+        center = vec3(fc * 1.13 + 0.18 * sin(uTime * 0.31 + fi),
+                      fall,
+                      (hash11(fi * 7.9) - 0.5) * 4.9);
+        radius = 0.30 + 0.31 * seed + 0.06 * beat;
+    } else if (section == 3) {
+        // IV. Glass cathedral: a processional aisle ending in a spherical rose window.
+        if (index < 16) {
+            int side = index % 2;
+            int row = index / 2;
+            float fs = side == 0 ? -1.0 : 1.0;
+            float fr = float(row);
+            center = vec3(fs * (2.02 + 0.13 * sin(fr * 1.7 + uTime * 0.16)),
+                          -1.23 + 0.12 * sin(fr + uTime * 0.25),
+                          3.15 - fr * 1.18);
+            radius = 0.43 + 0.10 * seed;
+        } else {
+            float k = float(index - 16);
+            float a = PI * (k + 0.5) / 8.0;
+            center = vec3(cos(a) * 2.26,
+                          -0.98 + sin(a) * 2.45,
+                          -5.45 + 0.12 * sin(uTime * 0.3 + k));
+            radius = 0.34 + 0.09 * seed + 0.04 * beat;
+        }
+    } else if (section == 4) {
+        // V. Singularity: beads are swallowed by a deep, rotating glass vortex.
+        if (index == 0) {
+            center = vec3(0.0, 0.0, -3.75);
+            radius = 1.38 + 0.13 * beat;
+        } else {
+            float f = float(index - 1) / 22.0;
+            float a = GOLDEN * fi - uTime * (0.64 + 0.7 * (1.0 - f));
+            float spiralRadius = 0.38 + 2.85 * f;
+            center = vec3(cos(a) * spiralRadius,
+                          sin(a) * spiralRadius,
+                          2.8 - f * 6.25 + 0.18 * sin(uTime + fi));
+            radius = 0.18 + 0.29 * f + 0.08 * seed;
+        }
+    } else {
+        // VI. Apotheosis: the core opens into an expanding Fibonacci crown.
+        if (index == 0) {
+            center = vec3(0.0, 0.12 * sin(uTime * 0.8), 0.0);
+            radius = 1.32 + 0.24 * beat;
+        } else {
+            float f = float(index - 1) / 22.0;
+            float y = 1.0 - 2.0 * f;
+            float radial = sqrt(max(0.0, 1.0 - y * y));
+            float a = GOLDEN * fi + uTime * (0.15 + 0.12 * beat);
+            float expansion = 2.40 + 0.65 * beat + 0.18 * sin(uTime * 0.5);
+            center = vec3(cos(a) * radial, y, sin(a) * radial) * expansion;
+            center += normalize(center + vec3(0.001)) * 0.20 * sin(uTime * 1.4 + fi);
+            radius = 0.23 + 0.22 * seed + 0.07 * beat;
+        }
+    }
+
+    // Absorption is a coefficient, not a surface colour.  Long paths lose the
+    // complementary wavelengths and therefore look naturally more saturated.
+    vec3 dye = sectionColor(section, seed + fi * 0.019);
+    absorption = 0.055 + (vec3(1.0) - dye) * (0.24 + 0.16 * seed);
+    if (section == 4 && index == 0) absorption *= 2.8;
+}
+
+void cameraForSection(int section, out vec3 origin, out vec3 target, out float roll, out float focal) {
+    vec4 audio = audioLevel();
+    float beat = max(audio.w, audio.x * 0.7);
+    roll = 0.0;
+    focal = 1.68;
+
+    if (section == 0) {
+        origin = vec3(sin(uTime * 0.105) * 0.82, 0.30 + 0.18 * sin(uTime * 0.17), 7.25);
+        target = vec3(0.0, 0.0, 0.0);
+        focal = 1.76;
+    } else if (section == 1) {
+        float a = uTime * 0.105;
+        origin = vec3(cos(a) * 6.25, 1.25 + 0.25 * sin(a * 2.0), sin(a) * 6.25);
+        target = vec3(0.0);
+        roll = 0.08 * sin(uTime * 0.21);
+        focal = 1.74;
+    } else if (section == 2) {
+        origin = vec3(0.42 * sin(uTime * 0.19), 0.10, 8.0);
+        target = vec3(0.0, -0.35 - 0.15 * beat, 0.0);
+        roll = -0.025 * sin(uTime * 0.41);
+        focal = 1.62;
+    } else if (section == 3) {
+        origin = vec3(0.18 * sin(uTime * 0.13), -0.10, 7.0 - 0.18 * sin(uTime * 0.31));
+        target = vec3(0.0, 0.25, -2.5);
+        focal = 1.82;
+    } else if (section == 4) {
+        origin = vec3(0.22 * sin(uTime * 0.11), 0.18 * cos(uTime * 0.14), 7.85);
+        target = vec3(0.0, 0.0, -2.25);
+        roll = uTime * 0.035 + 0.08 * beat;
+        focal = 1.67;
+    } else {
+        float a = uTime * 0.075;
+        origin = vec3(cos(a) * 0.75, 0.62 + 0.22 * sin(a * 2.0), 8.3 + 0.35 * beat);
+        target = vec3(0.0, 0.05, 0.0);
+        roll = 0.04 * sin(uTime * 0.2);
+        focal = 1.70;
+    }
+}
+
+bool sphereIntersection(vec3 ro, vec3 rd, vec3 center, float radius, out float nearT, out float farT) {
+    vec3 offset = ro - center;
+    float b = dot(offset, rd);
+    float h = b * b - dot(offset, offset) + radius * radius;
+    if (h < 0.0) {
+        nearT = 1e20;
+        farT = -1e20;
+        return false;
+    }
+    h = sqrt(max(h, 0.0));
+    nearT = -b - h;
+    farT = -b + h;
+    return farT > EPSILON;
+}
+
+bool nearestSphere(
+    vec3 ro,
+    vec3 rd,
+    int section,
+    int ignoredIndex,
+    out int hitIndex,
+    out float hitT,
+    out vec3 hitCenter,
+    out float hitRadius,
+    out vec3 hitAbsorption,
+    out float hitSeed
+) {
+    hitIndex = -1;
+    hitT = 1e20;
+    hitCenter = vec3(0.0);
+    hitRadius = 0.0;
+    hitAbsorption = vec3(0.0);
+    hitSeed = 0.0;
+
+    for (int i = 0; i < MAX_SPHERES; ++i) {
+        if (i == ignoredIndex) continue;
+        vec3 center;
+        float radius;
+        vec3 absorption;
+        float seed;
+        sphereForIndex(i, section, center, radius, absorption, seed);
+        float nearT;
+        float farT;
+        if (radius > 0.0 && sphereIntersection(ro, rd, center, radius, nearT, farT)) {
+            float candidate = nearT > EPSILON ? nearT : farT;
+            if (candidate > EPSILON && candidate < hitT) {
+                hitIndex = i;
+                hitT = candidate;
+                hitCenter = center;
+                hitRadius = radius;
+                hitAbsorption = absorption;
+                hitSeed = seed;
+            }
+        }
+    }
+    return hitIndex >= 0;
+}
+
+float causticLattice(vec3 p, float seed) {
+    vec4 audio = audioLevel();
+    float pulse = max(audio.w, audio.x * 0.65);
+    vec3 q = p * (3.2 + 1.2 * audio.z);
+    q.xy = rotate2(seed * TAU + 0.12 * sin(uTime)) * q.xy;
+    float t = uTime * (0.72 + 0.65 * pulse);
+    float a = sin(q.x + 1.35 * sin(q.y * 1.17 + t));
+    float b = sin(q.y * 1.41 - 1.21 * sin(q.z + t * 1.13));
+    float c = sin(q.z * 1.27 + 1.10 * sin(q.x - t * 0.83));
+    float cells = 1.0 - abs((a + b + c) / 3.0);
+    return pow(saturate(cells), 9.0 - 2.0 * audio.z);
+}
+
+float proceduralStars(vec3 direction) {
+    vec3 cell = floor(direction * 286.0);
+    float h = hash31(cell);
+    float star = pow(h, 54.0);
+    float twinkle = 0.62 + 0.38 * sin(uTime * (1.2 + h * 3.0) + h * 80.0);
+    return star * twinkle;
+}
+
+/* Procedural emissive world sampled by both reflection and refraction rays. */
+vec3 environmentRadiance(vec3 ro, vec3 rd, int section) {
+    vec4 audio = audioLevel();
+    float bass = audio.x;
+    float treble = audio.z;
+    float beat = max(audio.w, bass * 0.68);
+    vec3 primary = sectionColor(section, 0.08);
+    vec3 secondary = sectionColor(section, 0.62);
+
+    float horizon = saturate(0.5 + rd.y * 0.5);
+    vec3 color = mix(vec3(0.002, 0.004, 0.012), vec3(0.025, 0.045, 0.095), horizon);
+    float nebula = 0.5 + 0.5 * sin(rd.x * 8.0 + sin(rd.y * 11.0 - uTime * 0.08)
+                                      + sin(rd.z * 9.0 + uTime * 0.05));
+    color += primary * (0.012 + 0.018 * bass) * nebula * nebula;
+    color += vec3(0.35, 0.52, 0.95) * proceduralStars(rd) * (0.35 + 1.8 * treble);
+
+    vec3 lightA = normalize(vec3(-0.55 + 0.12 * sin(uTime * 0.17), 0.48, 0.68));
+    vec3 lightB = normalize(vec3(0.72, -0.12 + 0.08 * cos(uTime * 0.13), 0.44));
+    float sunA = pow(max(dot(rd, lightA), 0.0), 420.0);
+    float sunB = pow(max(dot(rd, lightB), 0.0), 760.0);
+    color += primary * sunA * (9.0 + 15.0 * beat);
+    color += secondary * sunB * (5.0 + 10.0 * treble);
+
+    if (section == 0) {
+        float ribbon = pow(1.0 - abs(sin(atan(rd.y, rd.x) * 3.0 + rd.z * 4.0 - uTime * 0.12)), 22.0);
+        color += mix(primary, secondary, horizon) * ribbon * (0.16 + 0.35 * beat);
+    } else if (section == 1) {
+        float longitude = atan(rd.z, rd.x);
+        float latitude = asin(clamp(rd.y, -1.0, 1.0));
+        float rings = pow(1.0 - abs(sin(latitude * 11.0 + sin(longitude * 3.0 - uTime * 0.2))), 34.0);
+        color += secondary * rings * (0.18 + beat * 0.44);
+    } else if (section == 2) {
+        float rain = pow(1.0 - abs(sin(atan(rd.x, rd.z) * 17.0 + rd.y * 2.0)), 42.0);
+        rain *= 0.35 + 0.65 * pow(saturate(-rd.y + 0.35), 2.0);
+        color += primary * rain * (0.24 + 0.8 * beat);
+    } else if (section == 3) {
+        float ribs = pow(1.0 - abs(sin(atan(rd.x, rd.z) * 12.0)), 52.0);
+        float vault = pow(1.0 - abs(sin(asin(clamp(rd.y, -1.0, 1.0)) * 9.0)), 46.0);
+        color += primary * ribs * vault * (0.65 + beat);
+    } else if (section == 4) {
+        vec3 vortexAxis = normalize(vec3(0.0, 0.0, -1.0));
+        float axial = dot(rd, vortexAxis);
+        float ring = exp(-70.0 * abs(axial - 0.76 - 0.025 * sin(uTime * 0.4)));
+        float swirl = 0.45 + 0.55 * sin(atan(rd.y, rd.x) * 9.0 + uTime * 1.1);
+        color += mix(primary, secondary, swirl) * ring * (1.2 + 2.5 * beat);
+        color *= 1.0 - 0.35 * exp(-38.0 * (1.0 - axial));
+    } else {
+        float radial = pow(max(0.0, dot(rd, normalize(vec3(0.0, 0.12, -1.0)))), 14.0);
+        float rays = pow(0.5 + 0.5 * sin(atan(rd.y, rd.x) * 18.0 + uTime * 0.15), 12.0);
+        color += mix(primary, vec3(1.0, 0.72, 0.32), rays) * radial * rays * (0.7 + 2.5 * beat);
+    }
+
+    // A world-space luminous floor supplies parallax cues in every reflected ball.
+    if (rd.y < -0.015) {
+        float floorT = (-2.55 - ro.y) / rd.y;
+        if (floorT > 0.0 && floorT < 80.0) {
+            vec3 p = ro + rd * floorT;
+            float fineX = pow(0.5 + 0.5 * cos(p.x * PI * 1.25), 36.0);
+            float fineZ = pow(0.5 + 0.5 * cos(p.z * PI * 1.25), 36.0);
+            float grid = saturate(fineX + fineZ);
+            float fade = exp(-0.035 * floorT * floorT);
+            float floorCaustic = causticLattice(p * 0.43, 0.37);
+            color += (primary * grid * (0.28 + beat) + secondary * floorCaustic * (0.16 + beat)) * fade;
+        }
+    }
+    return max(color, vec3(0.0));
+}
+
+float schlickFresnel(float cosine, float ior) {
+    float f0 = (ior - 1.0) / (ior + 1.0);
+    f0 *= f0;
+    float m = 1.0 - saturate(cosine);
+    float m2 = m * m;
+    return f0 + (1.0 - f0) * m2 * m2 * m;
+}
+
+/*
+    Trace a ray through both analytic surfaces of one sphere.  Returning the
+    actual exit point (rather than bending only once) is what makes silhouettes
+    and internal magnification read as solid glass.
+*/
+float refractThroughSphere(
+    vec3 incident,
+    vec3 frontPoint,
+    vec3 frontNormal,
+    vec3 center,
+    float radius,
+    float ior,
+    out vec3 exitPoint,
+    out vec3 exitDirection,
+    out float pathLength,
+    out float exitFresnel
+) {
+    vec3 insideDirection = refract(incident, frontNormal, 1.0 / ior);
+    if (dot(insideDirection, insideDirection) < 0.25) {
+        exitPoint = frontPoint;
+        exitDirection = reflect(incident, frontNormal);
+        pathLength = 0.0;
+        exitFresnel = 1.0;
+        return 0.0;
+    }
+    insideDirection = normalize(insideDirection);
+    vec3 insideOrigin = frontPoint + insideDirection * EPSILON;
+    vec3 offset = insideOrigin - center;
+    float b = dot(offset, insideDirection);
+    float h = max(0.0, b * b - dot(offset, offset) + radius * radius);
+    float exitT = max(EPSILON, -b + sqrt(h));
+    exitPoint = insideOrigin + insideDirection * exitT;
+    vec3 outwardNormal = normalize(exitPoint - center);
+    exitDirection = refract(insideDirection, -outwardNormal, ior);
+    pathLength = exitT;
+    float exitCosine = abs(dot(insideDirection, outwardNormal));
+    exitFresnel = schlickFresnel(exitCosine, ior);
+    if (dot(exitDirection, exitDirection) < 0.25) {
+        exitDirection = reflect(insideDirection, -outwardNormal);
+        exitFresnel = 1.0;
+        return 0.0;
+    }
+    exitDirection = normalize(exitDirection);
+    return 1.0;
+}
+
+/*
+    surfaceRadiance is energy reflected/emitted at the interfaces;
+    transmittance is Beer-Lambert-filtered energy available to the world behind;
+    dispersedWorld contains one independently refracted environment sample per
+    colour channel.
+*/
+void glassOptics(
+    vec3 ro,
+    vec3 rd,
+    int section,
+    float hitT,
+    vec3 center,
+    float radius,
+    vec3 absorption,
+    float seed,
+    out vec3 surfaceRadiance,
+    out vec3 transmittance,
+    out vec3 dispersedWorld,
+    out vec3 greenExitPoint,
+    out vec3 greenExitDirection
+) {
+    vec4 audio = audioLevel();
+    float beat = max(audio.w, audio.x * 0.70);
+    vec3 p = ro + rd * hitT;
+    vec3 normal = normalize(p - center);
+    float facing = saturate(dot(-rd, normal));
+
+    // Crown glass: blue light sees the largest IOR, producing visible edge splits.
+    float iorR = 1.493 + 0.008 * seed;
+    float iorG = 1.511 + 0.009 * seed;
+    float iorB = 1.532 + 0.010 * seed;
+    vec3 exitR;
+    vec3 exitG;
+    vec3 exitB;
+    vec3 pointR;
+    vec3 pointG;
+    vec3 pointB;
+    float lengthR;
+    float lengthG;
+    float lengthB;
+    float exitFresnelR;
+    float exitFresnelG;
+    float exitFresnelB;
+    float validR = refractThroughSphere(rd, p, normal, center, radius, iorR,
+                                        pointR, exitR, lengthR, exitFresnelR);
+    float validG = refractThroughSphere(rd, p, normal, center, radius, iorG,
+                                        pointG, exitG, lengthG, exitFresnelG);
+    float validB = refractThroughSphere(rd, p, normal, center, radius, iorB,
+                                        pointB, exitB, lengthB, exitFresnelB);
+
+    greenExitPoint = pointG;
+    greenExitDirection = exitG;
+    vec3 frontFresnel = vec3(schlickFresnel(facing, iorR),
+                             schlickFresnel(facing, iorG),
+                             schlickFresnel(facing, iorB));
+    vec3 exitFresnel = vec3(exitFresnelR, exitFresnelG, exitFresnelB);
+    vec3 valid = vec3(validR, validG, validB);
+    vec3 opticalDistance = vec3(lengthR, lengthG, lengthB);
+    vec3 beer = exp(-absorption * opticalDistance);
+    transmittance = valid * (vec3(1.0) - frontFresnel)
+                          * (vec3(1.0) - exitFresnel) * beer;
+
+    vec3 reflected = environmentRadiance(p + normal * EPSILON, reflect(rd, normal), section);
+    surfaceRadiance = reflected * frontFresnel;
+
+    vec3 worldR = environmentRadiance(pointR + exitR * EPSILON, exitR, section);
+    vec3 worldG = environmentRadiance(pointG + exitG * EPSILON, exitG, section);
+    vec3 worldB = environmentRadiance(pointB + exitB * EPSILON, exitB, section);
+    dispersedWorld = vec3(worldR.r, worldG.g, worldB.b);
+
+    // Thin emissive caustic filaments and a spectral grazing rim are intentional
+    // bloom sources.  Their intensity is transient-reactive but remains bounded.
+    float lattice = causticLattice(normal * 1.7 + center * 0.31, seed);
+    float rim = pow(1.0 - facing, 5.0);
+    vec3 accent = sectionColor(section, seed + 0.25);
+    surfaceRadiance += accent * lattice * (0.055 + 1.65 * beat + 0.30 * audio.z);
+    surfaceRadiance += mix(accent, vec3(0.55, 0.82, 1.0), 0.45)
+                     * rim * (0.10 + 0.75 * audio.z);
+    // A very small forward lobe makes the ball catch the brightest environment
+    // lights even when its reflection ray misses their mathematical point source.
+    surfaceRadiance += accent * pow(1.0 - abs(dot(normal, normalize(vec3(0.4, 0.7, 0.55)))), 18.0)
+                     * (0.025 + 0.12 * beat);
+}
+
+vec3 sphereHalos(vec3 ro, vec3 rd, int section) {
+    vec4 audio = audioLevel();
+    float beat = max(audio.w, audio.x * 0.7);
+    vec3 haloColor = vec3(0.0);
+    for (int i = 0; i < MAX_SPHERES; ++i) {
+        vec3 center;
+        float radius;
+        vec3 absorption;
+        float seed;
+        sphereForIndex(i, section, center, radius, absorption, seed);
+        vec3 toCenter = center - ro;
+        float along = max(0.0, dot(toCenter, rd));
+        float distanceToRay = length(toCenter - rd * along);
+        float edgeDistance = max(0.0, distanceToRay - radius);
+        float halo = exp(-edgeDistance * (8.0 + 5.0 * uQuality));
+        halo *= 1.0 / (1.0 + 0.035 * along * along);
+        haloColor += sectionColor(section, seed) * halo * (0.0018 + 0.0075 * beat);
+    }
+    return haloColor;
+}
+
+vec3 traceVitreousScene(vec3 ro, vec3 rd, int section) {
+    int firstIndex;
+    float firstT;
+    vec3 firstCenter;
+    float firstRadius;
+    vec3 firstAbsorption;
+    float firstSeed;
+    bool firstHit = nearestSphere(ro, rd, section, -1, firstIndex, firstT,
+                                  firstCenter, firstRadius, firstAbsorption, firstSeed);
+    if (!firstHit) return environmentRadiance(ro, rd, section);
+
+    vec3 firstSurface;
+    vec3 firstTransmission;
+    vec3 firstWorld;
+    vec3 firstExitPoint;
+    vec3 firstExitDirection;
+    glassOptics(ro, rd, section, firstT, firstCenter, firstRadius,
+                firstAbsorption, firstSeed, firstSurface, firstTransmission,
+                firstWorld, firstExitPoint, firstExitDirection);
+
+    vec3 behind = firstWorld;
+    if (uQuality > 0.45) {
+        // One explicit transmitted continuation reveals other balls through the
+        // first ball.  The loop bounds remain static and WebGL2-friendly.
+        vec3 secondOrigin = firstExitPoint + firstExitDirection * (EPSILON * 2.0);
+        int secondIndex;
+        float secondT;
+        vec3 secondCenter;
+        float secondRadius;
+        vec3 secondAbsorption;
+        float secondSeed;
+        bool secondHit = nearestSphere(secondOrigin, firstExitDirection, section,
+                                       firstIndex, secondIndex, secondT, secondCenter,
+                                       secondRadius, secondAbsorption, secondSeed);
+        if (secondHit) {
+            vec3 secondSurface;
+            vec3 secondTransmission;
+            vec3 secondWorld;
+            vec3 secondExitPoint;
+            vec3 secondExitDirection;
+            glassOptics(secondOrigin, firstExitDirection, section, secondT,
+                        secondCenter, secondRadius, secondAbsorption, secondSeed,
+                        secondSurface, secondTransmission, secondWorld,
+                        secondExitPoint, secondExitDirection);
+            behind = secondSurface + secondTransmission * secondWorld;
+            // Preserve a restrained red/blue split from the first lens around
+            // secondary silhouettes without requiring three geometry continuations.
+            vec3 centralWorld = environmentRadiance(firstExitPoint + firstExitDirection * EPSILON,
+                                                    firstExitDirection, section);
+            behind += (firstWorld - centralWorld) * 0.12;
+        }
+    }
+    return firstSurface + firstTransmission * max(behind, vec3(0.0));
+}
+
+void main() {
+    vec2 resolution = max(uResolution, vec2(1.0));
+    vec2 uv = (2.0 * gl_FragCoord.xy - resolution) / resolution.y;
+    int section = int(clamp(floor(uSection + 0.0001), 0.0, 5.0));
+
+    vec3 ro;
+    vec3 target;
+    float roll;
+    float focal;
+    cameraForSection(section, ro, target, roll, focal);
+    vec3 forward = normalize(target - ro);
+    vec3 right = normalize(cross(forward, vec3(0.0, 1.0, 0.0)));
+    vec3 up = normalize(cross(right, forward));
+    // Roll the image basis explicitly.
+    vec3 baseRight = normalize(cross(forward, vec3(0.0, 1.0, 0.0)));
+    vec3 baseUp = normalize(cross(baseRight, forward));
+    right = baseRight * cos(roll) + baseUp * sin(roll);
+    up = -baseRight * sin(roll) + baseUp * cos(roll);
+    vec3 rd = normalize(forward * focal + right * uv.x + up * uv.y);
+
+    vec3 color = traceVitreousScene(ro, rd, section);
+    color += sphereHalos(ro, rd, section) * (0.55 + 0.45 * saturate(uQuality));
+
+    // A caustic-white optical flash hides the hard composition swap at integer
+    // section boundaries: it rises through the outgoing final tenth and falls
+    // through the incoming first tenth.  Suppress the incoming lobe at show start.
+    float sectionPhase = fract(max(uSection, 0.0));
+    float outgoingFlash = smoothstep(0.90, 1.0, sectionPhase);
+    float incomingFlash = (1.0 - smoothstep(0.0, 0.10, sectionPhase))
+                        * step(0.5, uSection);
+    float flashEnvelope = max(outgoingFlash, incomingFlash);
+    float flashCaustic = causticLattice(vec3(uv * 1.45,
+                                             sectionPhase * 2.0 + uTime * 0.08), 0.91);
+    vec3 flashWhite = mix(vec3(0.72, 0.91, 1.0), vec3(1.0, 0.98, 0.92),
+                          0.5 + 0.5 * uv.y);
+    color += flashWhite * flashEnvelope * flashEnvelope
+           * (1.25 + 1.85 * flashCaustic);
+    color = mix(color, flashWhite * (2.15 + 0.85 * flashCaustic),
+                0.56 * pow(flashEnvelope, 1.35));
+
+    // Optical vignette only; tonemapping is intentionally left to the bloom/post
+    // pass so values above 1.0 remain useful in RGBA16F render targets.
+    float vignette = 1.0 - 0.15 * smoothstep(0.35, 1.55, dot(uv, uv));
+    color *= vignette;
+    fragColor = vec4(max(color, vec3(0.0)), 1.0);
+}`;
+
+    const BLUR_SHADER = `#version 300 es
+    precision highp float;
+    in vec2 vUv;
+    out vec4 fragColor;
+    uniform sampler2D uSource;
+    uniform vec2 uTexel;
+    uniform vec2 uDirection;
+    uniform float uThreshold;
+    vec3 prefilter(vec3 c) {
+      float b = max(max(c.r, c.g), c.b);
+      float knee = .35;
+      float soft = clamp((b - uThreshold + knee) / (2. * knee), 0., 1.);
+      soft = soft * soft * (3. - 2. * soft);
+      float contribution = max(b - uThreshold, 0.) + soft * knee;
+      return c * contribution / max(b, .0001);
+    }
+    void main() {
+      vec2 d = uTexel * uDirection;
+      vec3 c = texture(uSource, vUv).rgb * .227027;
+      c += texture(uSource, vUv + d * 1.384615).rgb * .316216;
+      c += texture(uSource, vUv - d * 1.384615).rgb * .316216;
+      c += texture(uSource, vUv + d * 3.230769).rgb * .070270;
+      c += texture(uSource, vUv - d * 3.230769).rgb * .070270;
+      if (uThreshold > 0.) c = prefilter(c);
+      fragColor = vec4(c, 1.);
+    }`;
+
+    const COMPOSITE_SHADER = `#version 300 es
+    precision highp float;
+    in vec2 vUv;
+    out vec4 fragColor;
+    uniform sampler2D uScene;
+    uniform sampler2D uBloom;
+    uniform vec2 uResolution;
+    uniform float uTime;
+    uniform vec4 uAudio;
+    vec3 aces(vec3 x) {
+      const float a = 2.51, b = .03, c = 2.43, d = .59, e = .14;
+      return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0., 1.);
+    }
+    float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7)) + uTime * 31.7) * 43758.5453); }
+    void main() {
+      vec2 uv = vUv;
+      vec2 center = uv - .5;
+      float aberration = (.0007 + uAudio.w * .0015) * dot(center, center);
+      vec2 dir = normalize(center + 1e-5);
+      vec3 base;
+      base.r = texture(uScene, uv + dir * aberration).r;
+      base.g = texture(uScene, uv).g;
+      base.b = texture(uScene, uv - dir * aberration).b;
+      vec3 bloom = texture(uBloom, uv).rgb;
+      vec3 color = aces(base + bloom * (1.05 + uAudio.z * .45));
+      color = pow(color, vec3(.92));
+      float vignette = smoothstep(.98, .2, length(center * vec2(1., uResolution.y / uResolution.x)));
+      color *= mix(.62, 1., vignette);
+      float grain = hash(gl_FragCoord.xy) - .5;
+      color += grain * (.015 + .012 * (1. - dot(color, vec3(.333))));
+      color *= vec3(.985, 1., 1.015);
+      fragColor = vec4(color, 1.);
+    }`;
+
+    function compile(gl, type, source, label) {
+      const shader = gl.createShader(type);
+      if (!shader) throw new Error(`${label} shader allocation failed.`);
+      gl.shaderSource(shader, source);
+      gl.compileShader(shader);
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        const log = gl.getShaderInfoLog(shader) || "Unknown shader compiler error";
+        gl.deleteShader(shader);
+        throw new Error(`${label} shader failed:\n${log}`);
+      }
+      return shader;
+    }
+
+    function program(gl, fragment, label) {
+      const result = gl.createProgram();
+      if (!result) throw new Error(`${label} program allocation failed.`);
+      let vertex = null;
+      let pixel = null;
+      try {
+        vertex = compile(gl, gl.VERTEX_SHADER, VERTEX_SHADER, `${label} vertex`);
+        pixel = compile(gl, gl.FRAGMENT_SHADER, fragment, `${label} fragment`);
+        gl.attachShader(result, vertex);
+        gl.attachShader(result, pixel);
+        gl.linkProgram(result);
+        if (!gl.getProgramParameter(result, gl.LINK_STATUS)) {
+          const log = gl.getProgramInfoLog(result) || "Unknown program linker error";
+          throw new Error(`${label} program failed:\n${log}`);
+        }
+        return result;
+      } catch (error) {
+        gl.deleteProgram(result);
+        throw error;
+      } finally {
+        if (vertex) gl.deleteShader(vertex);
+        if (pixel) gl.deleteShader(pixel);
+      }
+    }
+
+    class Renderer {
+      constructor(canvas) {
+        this.canvas = canvas;
+        this.gl = canvas.getContext("webgl2", {
+          alpha: false,
+          antialias: false,
+          depth: false,
+          stencil: false,
+          powerPreference: "high-performance",
+          preserveDrawingBuffer: false
+        });
+        if (!this.gl) throw new Error("This browser did not provide a WebGL 2 context.");
+        const gl = this.gl;
+        const extColor = gl.getExtension("EXT_color_buffer_float");
+        const extLinear = gl.getExtension("OES_texture_float_linear");
+        if (!extColor || !extLinear) {
+          throw new Error("VITREOUS requires floating-point render targets (EXT_color_buffer_float and OES_texture_float_linear). GPU capability is incomplete.");
+        }
+
+        this.destroyed = false;
+        this.targets = [];
+        this.sceneProgram = null;
+        this.blurProgram = null;
+        this.compositeProgram = null;
+        this.vao = null;
+        this.quality = QUALITY[qualityIndex];
+        this.width = 0;
+        this.height = 0;
+        this.uniformCache = new WeakMap();
+        this.onContextLost = () => {
+          const error = new Error("The GPU context was lost; rendering cannot continue safely.");
+          fatal("The GPU context was lost.", `${error.message} Reload the page to create a clean graphics context.`);
+          throw error;
+        };
+        this.onResize = () => this.resize();
+
+        try {
+          canvas.addEventListener("webglcontextlost", this.onContextLost, { once: true });
+          this.sceneProgram = program(gl, SCENE_SHADER, "scene");
+          this.blurProgram = program(gl, BLUR_SHADER, "bloom");
+          this.compositeProgram = program(gl, COMPOSITE_SHADER, "composite");
+          this.vao = gl.createVertexArray();
+          if (!this.vao) throw new Error("Fullscreen vertex-array allocation failed.");
+          addEventListener("resize", this.onResize, { passive: true });
+          this.resize();
+        } catch (error) {
+          this.destroy();
+          throw error;
+        }
+      }
+
+      setQuality(quality) {
+        this.quality = quality;
+        this.resize(true);
+      }
+
+      target(width, height) {
+        const gl = this.gl;
+        const texture = gl.createTexture();
+        if (!texture) throw new Error(`Texture allocation failed for ${width}x${height} render target.`);
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, width, height, 0, gl.RGBA, gl.HALF_FLOAT, null);
+        const textureError = gl.getError();
+        if (textureError !== gl.NO_ERROR) {
+          gl.deleteTexture(texture);
+          throw new Error(`Texture allocation produced WebGL error 0x${textureError.toString(16)} for ${width}x${height}.`);
+        }
+        const framebuffer = gl.createFramebuffer();
+        if (!framebuffer) {
+          gl.deleteTexture(texture);
+          throw new Error(`Framebuffer allocation failed for ${width}x${height} render target.`);
+        }
+        gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+        const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+        if (status !== gl.FRAMEBUFFER_COMPLETE) {
+          gl.deleteFramebuffer(framebuffer);
+          gl.deleteTexture(texture);
+          throw new Error(`Framebuffer incomplete: 0x${status.toString(16)}`);
+        }
+        const target = { texture, framebuffer, width, height };
+        this.targets.push(target);
+        return target;
+      }
+
+      destroyTargets() {
+        const gl = this.gl;
+        for (const target of this.targets) {
+          gl.deleteTexture(target.texture);
+          gl.deleteFramebuffer(target.framebuffer);
+        }
+        this.targets.length = 0;
+      }
+
+      destroy() {
+        if (this.destroyed) throw new Error("Renderer destruction was requested more than once.");
+        removeEventListener("resize", this.onResize);
+        this.canvas.removeEventListener("webglcontextlost", this.onContextLost);
+        this.destroyTargets();
+        if (this.sceneProgram) this.gl.deleteProgram(this.sceneProgram);
+        if (this.blurProgram) this.gl.deleteProgram(this.blurProgram);
+        if (this.compositeProgram) this.gl.deleteProgram(this.compositeProgram);
+        if (this.vao) this.gl.deleteVertexArray(this.vao);
+        this.sceneProgram = null;
+        this.blurProgram = null;
+        this.compositeProgram = null;
+        this.vao = null;
+        this.destroyed = true;
+      }
+
+      resize(force = false) {
+        const displayWidth = Math.max(2, innerWidth);
+        const displayHeight = Math.max(2, innerHeight);
+        const dpr = Math.min(devicePixelRatio || 1, 1.75) * this.quality.scale;
+        const width = Math.max(2, Math.floor(displayWidth * dpr));
+        const height = Math.max(2, Math.floor(displayHeight * dpr));
+        if (!force && width === this.width && height === this.height) return;
+        this.width = width;
+        this.height = height;
+        this.canvas.width = width;
+        this.canvas.height = height;
+        this.canvas.style.width = `${displayWidth}px`;
+        this.canvas.style.height = `${displayHeight}px`;
+        this.destroyTargets();
+        this.sceneTarget = this.target(width, height);
+        const bloomWidth = Math.max(2, Math.floor(width * .36));
+        const bloomHeight = Math.max(2, Math.floor(height * .36));
+        this.bloomA = this.target(bloomWidth, bloomHeight);
+        this.bloomB = this.target(bloomWidth, bloomHeight);
+        this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
+      }
+
+      uniforms(programObject) {
+        let cache = this.uniformCache.get(programObject);
+        if (!cache) {
+          cache = new Map();
+          this.uniformCache.set(programObject, cache);
+        }
+        return name => {
+          if (!cache.has(name)) {
+            const location = this.gl.getUniformLocation(programObject, name);
+            if (location === null) throw new Error(`Required shader uniform is inactive or missing: ${name}`);
+            cache.set(name, location);
+          }
+          return cache.get(name);
+        };
+      }
+
+      draw(programObject, target, setup) {
+        const gl = this.gl;
+        const isScreen = target === null;
+        if (!isScreen && (!target || !target.framebuffer || !Number.isInteger(target.width) || !Number.isInteger(target.height) || target.width < 1 || target.height < 1)) {
+          throw new Error("Render pass received an invalid framebuffer target.");
+        }
+        gl.bindFramebuffer(gl.FRAMEBUFFER, isScreen ? null : target.framebuffer);
+        gl.viewport(0, 0, isScreen ? this.width : target.width, isScreen ? this.height : target.height);
+        gl.useProgram(programObject);
+        gl.bindVertexArray(this.vao);
+        setup(this.uniforms(programObject));
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+      }
+
+      bindTexture(location, texture, unit) {
+        const gl = this.gl;
+        if (!texture) throw new Error(`Texture unit ${unit} received an invalid texture.`);
+        gl.activeTexture(gl.TEXTURE0 + unit);
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.uniform1i(location, unit);
+      }
+
+      render(time, reactive, section) {
+        const gl = this.gl;
+        if (!Number.isFinite(time) || !Number.isFinite(section)) throw new Error("Renderer received an invalid transport coordinate.");
+        const channels = ["low", "mid", "high", "glass", "kick"];
+        for (const name of channels) {
+          if (!Number.isFinite(reactive[name]) || reactive[name] < 0 || reactive[name] > 1) {
+            throw new Error(`Renderer received an invalid audio-reactivity channel: ${name}`);
+          }
+        }
+        const a = [reactive.low, reactive.mid, reactive.high, Math.max(reactive.glass, reactive.kick)];
+        this.draw(this.sceneProgram, this.sceneTarget, u => {
+          gl.uniform2f(u("uResolution"), this.width, this.height);
+          gl.uniform1f(u("uTime"), time);
+          gl.uniform4f(u("uAudio"), a[0], a[1], a[2], a[3]);
+          gl.uniform1f(u("uSection"), section);
+          gl.uniform1f(u("uQuality"), this.quality.steps);
+        });
+        this.draw(this.blurProgram, this.bloomA, u => {
+          this.bindTexture(u("uSource"), this.sceneTarget.texture, 0);
+          gl.uniform2f(u("uTexel"), 1 / this.width, 1 / this.height);
+          gl.uniform2f(u("uDirection"), 1, 0);
+          gl.uniform1f(u("uThreshold"), .92);
+        });
+        this.draw(this.blurProgram, this.bloomB, u => {
+          this.bindTexture(u("uSource"), this.bloomA.texture, 0);
+          gl.uniform2f(u("uTexel"), 1 / this.bloomA.width, 1 / this.bloomA.height);
+          gl.uniform2f(u("uDirection"), 0, 1);
+          gl.uniform1f(u("uThreshold"), 0);
+        });
+        this.draw(this.compositeProgram, null, u => {
+          this.bindTexture(u("uScene"), this.sceneTarget.texture, 0);
+          this.bindTexture(u("uBloom"), this.bloomB.texture, 1);
+          gl.uniform2f(u("uResolution"), this.width, this.height);
+          gl.uniform1f(u("uTime"), time);
+          gl.uniform4f(u("uAudio"), a[0], a[1], a[2], a[3]);
+        });
+      }
+    }
+
+    function frame(now) {
+      if (failed) return;
+      if (!renderer) throw new Error("Animation frame executed without an initialized renderer.");
+      const idleTime = now * .001 - idleOrigin;
+      const t = started && audio ? audio.getTime() : idleTime * .22;
+      const loopTime = ((t % SHOW_DURATION) + SHOW_DURATION) % SHOW_DURATION;
+      const reactive = started && audio ? audio.getReactive() : {
+        low: .08 + .04 * Math.sin(idleTime * .7),
+        mid: .06,
+        high: .04,
+        glass: .08 + .08 * Math.max(0, Math.sin(idleTime * .43)),
+        kick: 0
+      };
+      renderer.render(t, reactive, started ? sectionCoordinate(loopTime) : .12);
+      if (started) updateHud(loopTime, reactive);
+      frameRequest = requestAnimationFrame(frame);
+    }
+
+    try {
+      renderer = new Renderer(ui.canvas);
+      frameRequest = requestAnimationFrame(frame);
+    } catch (error) {
+      fatal("The renderer could not be initialized.", error?.stack || String(error));
+      throw error;
+    }
+
+    window.demo = { start, togglePause, toggleMute, restart, cycleQuality, toggleFullscreen };
+  })();
+  </script>
+</body>
+</html>
