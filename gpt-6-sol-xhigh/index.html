@@ -1,0 +1,575 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#05050b">
+  <title>AFTERIMAGE — a real-time audiovisual demo</title>
+  <style>
+    :root { color-scheme: dark; --white:#f2efe9; --cyan:#77faff; --pink:#ff4c9b; }
+    * { box-sizing:border-box; }
+    html,body { width:100%; height:100%; margin:0; overflow:hidden; background:#05050b; }
+    body { color:var(--white); font-family:Arial,Helvetica,sans-serif; user-select:none; }
+    canvas { position:fixed; inset:0; display:block; width:100%; height:100%; }
+    #stage { background:#05050b; }
+    .grain { position:fixed; inset:0; pointer-events:none; z-index:2; opacity:.2; background:repeating-linear-gradient(0deg,transparent 0 2px,rgba(0,0,0,.28) 3px 4px); mix-blend-mode:multiply; }
+    .vignette { position:fixed; inset:0; pointer-events:none; z-index:2; background:radial-gradient(ellipse at center,transparent 35%,rgba(0,0,0,.45) 100%); }
+    #boot { position:fixed; inset:0; z-index:10; display:grid; place-items:center; padding:24px; background:radial-gradient(circle at 50% 48%,rgba(27,39,61,.3),rgba(3,4,10,.92) 70%); transition:opacity .9s ease,visibility .9s; }
+    #boot.hidden { opacity:0; visibility:hidden; pointer-events:none; }
+    .boot-inner { width:min(850px,100%); text-align:center; position:relative; }
+    .boot-inner:before,.boot-inner:after { content:""; position:absolute; width:44px; height:44px; opacity:.72; }
+    .boot-inner:before { top:-32px; left:0; border-top:1px solid var(--cyan); border-left:1px solid var(--cyan); }
+    .boot-inner:after { right:0; bottom:-30px; border-right:1px solid var(--pink); border-bottom:1px solid var(--pink); }
+    .eyebrow { font-family:monospace; font-size:11px; letter-spacing:.42em; color:var(--cyan); text-transform:uppercase; }
+    h1 { margin:22px 0 9px; font-size:clamp(62px,13vw,174px); line-height:.76; font-weight:900; letter-spacing:-.105em; text-indent:-.08em; text-shadow:0 0 70px rgba(119,250,255,.2); }
+    .boot-rule { width:min(490px,80%); height:1px; margin:30px auto 24px; background:linear-gradient(90deg,transparent,var(--white),transparent); opacity:.55; }
+    .deck { font-size:clamp(12px,1.3vw,16px); letter-spacing:.29em; text-transform:uppercase; color:#c2c0c7; }
+    #start { margin-top:46px; padding:17px 27px; border:1px solid var(--white); background:rgba(255,255,255,.06); color:var(--white); font:700 12px Arial,sans-serif; letter-spacing:.28em; text-transform:uppercase; cursor:pointer; transition:background .2s,color .2s,box-shadow .2s; }
+    #start:hover,#start:focus-visible { background:var(--white); color:#05050b; box-shadow:6px 6px 0 var(--pink); outline:none; }
+    .boot-foot { margin-top:23px; color:#898c9c; font:11px monospace; letter-spacing:.12em; }
+    #hud { position:fixed; z-index:4; inset:0; pointer-events:none; opacity:0; transition:opacity .7s; }
+    #hud.visible { opacity:1; }
+    .corner { position:absolute; top:26px; font:10px monospace; letter-spacing:.18em; text-transform:uppercase; text-shadow:0 2px 10px #000; }
+    .corner.left { left:30px; color:var(--cyan); }
+    .corner.right { right:30px; text-align:right; color:#cccbd1; }
+    #cue { position:absolute; left:clamp(28px,8vw,150px); bottom:clamp(104px,16vh,180px); max-width:min(700px,78vw); opacity:0; transform:translateY(18px); transition:opacity .65s,transform .65s; text-shadow:0 4px 30px #000; }
+    #cue.show { opacity:1; transform:translateY(0); }
+    #cue-index { color:var(--cyan); font:11px monospace; letter-spacing:.43em; }
+    #cue-title { margin:13px 0 8px; font-size:clamp(42px,8vw,112px); font-weight:900; letter-spacing:-.07em; line-height:.85; text-transform:uppercase; }
+    #cue-sub { color:#e0dfe6; font:12px monospace; letter-spacing:.2em; text-transform:uppercase; }
+    #whisper { position:absolute; right:clamp(28px,7vw,135px); top:48%; max-width:250px; padding-left:18px; border-left:2px solid var(--pink); color:#fff; font:11px/1.7 monospace; letter-spacing:.22em; text-transform:uppercase; text-shadow:0 2px 15px #000; opacity:0; transform:translateX(12px); transition:opacity .5s,transform .5s; }
+    #whisper.show { opacity:.85; transform:translateX(0); }
+    #transport { position:absolute; left:30px; right:30px; bottom:22px; display:flex; align-items:center; gap:18px; font:10px monospace; letter-spacing:.14em; color:#d2d0d8; }
+    #progress { height:2px; flex:1; background:rgba(255,255,255,.28); overflow:hidden; }
+    #progress-bar { width:0; height:100%; background:linear-gradient(90deg,var(--cyan),var(--pink)); box-shadow:0 0 12px var(--cyan); }
+    #keys { color:#9b9ba8; }
+    #pause-label { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); font:900 clamp(40px,7vw,100px) Arial,sans-serif; letter-spacing:-.06em; opacity:0; transition:opacity .2s; }
+    #pause-label.show { opacity:1; }
+    #error { position:fixed; z-index:20; inset:0; display:none; place-items:center; padding:28px; background:#09080e; color:#ffb4c9; font:14px/1.6 monospace; white-space:pre-wrap; }
+    #error.show { display:grid; }
+    @media (max-width:600px) { .corner { top:18px; } .corner.left { left:18px; } .corner.right { right:18px; } #transport { left:18px;right:18px;bottom:18px;gap:10px; } #keys,#whisper { display:none; } .boot-foot { line-height:1.6; } }
+    @media (prefers-reduced-motion:reduce) { .grain { opacity:.08; } }
+  </style>
+</head>
+<body>
+  <canvas id="stage" aria-label="Animated audiovisual demoscene visuals"></canvas>
+  <div class="grain"></div><div class="vignette"></div>
+  <div id="boot">
+    <div class="boot-inner">
+      <div class="eyebrow">an audiovisual transmission · 2026</div>
+      <h1>AFTER<br>IMAGE</h1>
+      <div class="boot-rule"></div>
+      <div class="deck">six movements / one signal / 137 seconds</div>
+      <button id="start" type="button">Enter transmission ↗</button>
+      <div class="boot-foot">Headphones recommended · Sound begins after you enter</div>
+    </div>
+  </div>
+  <div id="hud" aria-hidden="true">
+    <div class="corner left">A / I &nbsp; · &nbsp; REALTIME</div>
+    <div class="corner right"><span id="section">00 / ORIGIN</span><br><span id="clock">00:00</span></div>
+    <div id="cue"><div id="cue-index"></div><div id="cue-title"></div><div id="cue-sub"></div></div>
+    <div id="whisper"></div>
+    <div id="pause-label">PAUSED</div>
+    <div id="transport"><span>AFTERIMAGE</span><div id="progress"><div id="progress-bar"></div></div><span id="remaining">02:17</span><span id="keys">SPACE PAUSE · M MUTE · F FULLSCREEN</span></div>
+  </div>
+  <div id="error" role="alert"></div>
+  <script>
+  (() => {
+    'use strict';
+
+    const BPM = 140;
+    const BEAT = 60 / BPM;
+    const BARS = 80;
+    const DURATION = BARS * 4 * BEAT;
+    const SCENES = [
+      {bar:0,  index:'00 / ORIGIN',   title:'AFTERIMAGE', sub:'A SIGNAL IN SIX MOVEMENTS'},
+      {bar:8,  index:'01 / THE MACHINE', title:'THE MACHINE', sub:'WE BUILT A WAY THROUGH'},
+      {bar:24, index:'02 / THE BLOOM', title:'THE BLOOM', sub:'IT LEARNED TO DREAM'},
+      {bar:40, index:'03 / OVERLOAD', title:'OVERLOAD', sub:'EVERYTHING AT ONCE'},
+      {bar:56, index:'04 / DAYBREAK', title:'DAYBREAK', sub:'LIGHT GETS IN'},
+      {bar:72, index:'05 / RETURN', title:'AFTERIMAGE', sub:'THE SIGNAL REMAINS'}
+    ];
+    const WHISPERS = {16:'THE STRUCTURE REMEMBERS',32:'PATTERNS BECOME ORGANISMS',48:'THE SIGNAL COLLAPSES',64:'WE FIND THE OTHER SIDE'};
+
+    const canvas = document.getElementById('stage');
+    const gl = canvas.getContext('webgl', {antialias:false, alpha:false, powerPreference:'high-performance'});
+    const errorBox = document.getElementById('error');
+    function fail(message) { errorBox.textContent = message; errorBox.classList.add('show'); throw new Error(message); }
+    if (!gl) fail('WebGL is required to play AFTERIMAGE.');
+
+    const vertexSource = `
+      attribute vec2 position;
+      void main() { gl_Position = vec4(position, 0.0, 1.0); }
+    `;
+    const fragmentSource = `
+      precision highp float;
+      uniform vec2 R;
+      uniform float T;
+      uniform float B;
+      uniform float SC;
+      uniform float CUT;
+      #define PI 3.14159265359
+
+      float hash(float n) { return fract(sin(n)*43758.5453123); }
+      float hash2(vec2 p) { return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453123); }
+      float noise(vec2 p) {
+        vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
+        return mix(mix(hash2(i),hash2(i+vec2(1.,0.)),f.x),mix(hash2(i+vec2(0.,1.)),hash2(i+1.),f.x),f.y);
+      }
+      mat2 rot(float a) { float c=cos(a),s=sin(a); return mat2(c,-s,s,c); }
+      float line(float x,float w) { return 1.0-smoothstep(w,w+0.012,abs(x)); }
+      float glow(float d,float k) { return k/(abs(d)+k); }
+      vec3 pal(float t) { return .53+.47*cos(6.28318*(vec3(.07,.27,.49)+t)); }
+      float stars(vec2 p) {
+        vec2 g=floor(p),f=fract(p)-.5;
+        float h=hash2(g); vec2 o=vec2(hash2(g+17.3),hash2(g+71.7))-.5;
+        float d=length(f-o*.75);
+        return step(.975,h)*(.016/(d+.016))*mix(.25,1.,hash2(g+33.));
+      }
+      vec3 background(vec2 p) {
+        float n=noise(p*2.8+vec2(T*.025,-T*.018));
+        vec3 c=mix(vec3(.006,.009,.027),vec3(.025,.012,.055),n);
+        c+=stars(p*55.)*.65+stars(p*107.)*.22;
+        return c;
+      }
+      vec3 origin(vec2 p) {
+        vec2 q=p; q*=rot(.1*sin(T*.22));
+        float r=length(q), a=atan(q.y,q.x);
+        float pulse=exp(-4.5*fract(B));
+        float wob=.018*sin(a*12.+T*1.7)+.009*sin(a*31.-T*2.3);
+        float ring=abs(r-(.32+.025*sin(T*.52)+wob));
+        float ring2=abs(r-(.53+.014*sin(a*8.-T*.8)));
+        float spokes=pow(max(0.,cos(a*24.+T*.26)),20.)*(1.-smoothstep(.45,.6,r));
+        float orbit=glow(ring,.009), outer=glow(ring2,.004);
+        vec3 c=background(p);
+        c+=vec3(.12,.72,.92)*orbit*.82;
+        c+=vec3(.96,.16,.47)*outer*.43;
+        c+=vec3(.35,.85,1.)*spokes*.5;
+        c+=vec3(.3,.75,.95)*.022/(r+.022);
+        c+=vec3(.17,.45,.57)*exp(-r*r*9.)*(.4+pulse*.6);
+        float marks=step(.985,hash(floor(a*80.)))*line(r-.64,.003);
+        c+=vec3(.7,.9,1.)*marks*.55;
+        return c;
+      }
+      float box(vec3 p,vec3 b) { vec3 q=abs(p)-b; return length(max(q,0.))+min(max(q.x,max(q.y,q.z)),0.); }
+      vec2 hall(vec3 p) {
+        float z=mod(p.z,4.)-2.;
+        float d=p.y+1.45; float m=1.;
+        if (1.5-p.y<d) { d=1.5-p.y; m=2.; }
+        if (2.3-abs(p.x)<d) { d=2.3-abs(p.x); m=3.; }
+        float column=box(vec3(abs(p.x)-1.85,p.y,z),vec3(.13,1.42,.16));
+        if (column<d) { d=column; m=4.; }
+        float beam=box(vec3(p.x,p.y-1.36,z),vec3(1.85,.11,.16));
+        if (beam<d) { d=beam; m=4.; }
+        return vec2(d,m);
+      }
+      vec3 hallNormal(vec3 p) {
+        vec2 e=vec2(.002,0.); return normalize(vec3(hall(p+e.xyy).x-hall(p-e.xyy).x,hall(p+e.yxy).x-hall(p-e.yxy).x,hall(p+e.yyx).x-hall(p-e.yyx).x));
+      }
+      vec3 machine(vec2 p) {
+        float tm=T-8.*4.*60./140.;
+        vec3 ro=vec3(.15*sin(tm*.22),.04*sin(tm*.34),tm*5.2);
+        vec3 rd=normalize(vec3(p.x*.92,p.y*.92,1.65)); rd.xy=rot(.018*sin(tm*.3))*rd.xy;
+        float d=0.,m=0.; vec3 pos=ro;
+        for(int i=0;i<66;i++) { pos=ro+rd*d; vec2 h=hall(pos); m=h.y; if(h.x<.002 || d>56.) break; d+=max(h.x*.78,.015); }
+        vec3 c=vec3(.012,.02,.046)+vec3(.02,.055,.09)*exp(-length(p)*2.);
+        if(d<56.) {
+          vec3 n=hallNormal(pos);
+          float light=max(0.,dot(n,normalize(vec3(-.4,.8,-.7))))*.7+.19;
+          float nearLight=exp(-abs(mod(pos.z,4.)-2.)*5.);
+          if(m<1.5) {
+            float gx=line(fract(pos.x*.8)-.5,.014), gz=line(fract(pos.z*.8)-.5,.014);
+            c=vec3(.025,.045,.065)+vec3(.02,.5,.72)*(gx+gz)*.56;
+            c+=vec3(.1,.45,.62)*nearLight*.25;
+          } else if(m<2.5) {
+            float strip=line(abs(pos.x)-.9,.08)*nearLight;
+            c=vec3(.035,.038,.08)+vec3(.6,.84,1.)*strip*1.9;
+          } else if(m<3.5) {
+            float strip=line(pos.y+.72,.018)+line(pos.y-.85,.018);
+            c=vec3(.023,.027,.052)+vec3(.7,.1,.39)*strip*.75;
+          } else {
+            c=vec3(.11,.12,.18)*light+vec3(.13,.6,.78)*nearLight*.23;
+          }
+          float fog=1.-exp(-d*.048); c=mix(c,vec3(.04,.15,.23),fog*.88);
+          c+=vec3(.05,.43,.58)*pow(max(0.,dot(reflect(-rd,n),normalize(vec3(.2,.8,-.5)))),20.)*.3;
+        }
+        float center=exp(-length(p)*4.); c+=vec3(.03,.12,.16)*center;
+        return c;
+      }
+      vec2 sculpture(vec3 p) {
+        p.xz*=rot(T*.29); p.yz*=rot(.18*sin(T*.37));
+        float r=length(p);
+        float f=.13*sin(p.x*9.)*sin(p.y*9.)*sin(p.z*9.)+.08*sin(atan(p.y,p.x)*12.+T)*sin(p.z*7.);
+        float body=r-1.27+f;
+        float ring1=length(vec2(length(p.xy)-1.53,p.z))-.045;
+        float ring2=length(vec2(length(p.yz)-1.55,p.x))-.035;
+        float ring3=length(vec2(length(p.xz)-1.62,p.y))-.025;
+        float d=body,m=1.;
+        if(ring1<d) {d=ring1;m=2.;} if(ring2<d) {d=ring2;m=3.;} if(ring3<d) {d=ring3;m=2.;}
+        return vec2(d,m);
+      }
+      vec3 sculptNormal(vec3 p) {
+        vec2 e=vec2(.003,0.); return normalize(vec3(sculpture(p+e.xyy).x-sculpture(p-e.xyy).x,sculpture(p+e.yxy).x-sculpture(p-e.yxy).x,sculpture(p+e.yyx).x-sculpture(p-e.yyx).x));
+      }
+      vec3 bloom(vec2 p) {
+        vec3 ro=vec3(0.,0.,4.35+.2*sin(T*.23));
+        vec3 rd=normalize(vec3(p, -1.8));
+        float d=0.,m=0.; vec3 pos=ro;
+        for(int i=0;i<70;i++) {pos=ro+rd*d;vec2 h=sculpture(pos);m=h.y;if(h.x<.002||d>10.)break;d+=max(h.x*.76,.012);}
+        vec3 c=background(p)+vec3(.09,.01,.11)*exp(-dot(p,p)*2.5);
+        float theta=atan(p.y,p.x);
+        for(int j=0;j<3;j++) { float radius=.52+float(j)*.31; float v=abs(length(p)-radius-.013*sin(theta*24.+T*(float(j)+1.))); c+=pal(.14*float(j)+.7)*.0018/(v+.003)*.16; }
+        if(d<10.) {
+          vec3 n=sculptNormal(pos);
+          vec3 l1=normalize(vec3(-.6,.8,1.)),l2=normalize(vec3(.8,-.4,-.3));
+          float dif=max(dot(n,l1),0.);
+          float rim=pow(1.-max(dot(n,-rd),0.),2.7);
+          float spec=pow(max(dot(reflect(-l1,n),-rd),0.),28.);
+          float veins=pow(max(0.,sin(pos.x*16.+sin(pos.y*8.)+T)*sin(pos.y*14.-T*.6)),8.);
+          vec3 base=m<1.5?vec3(.12,.26,.37):m<2.5?vec3(.87,.24,.49):vec3(.2,.82,.93);
+          c=base*(.22+.75*dif)+vec3(.77,.92,1.)*spec*.8;
+          c+=vec3(.12,.82,1.)*rim*.88+vec3(1.,.36,.68)*veins*.38;
+          c+=base*max(dot(n,l2),0.)*.16;
+        }
+        return c;
+      }
+      vec3 overload(vec2 p) {
+        vec2 q=p; float r=length(q)+.0001,a=atan(q.y,q.x);
+        float z=1./(r+.11)+T*1.15;
+        float cells=abs(sin(a*12.+sin(z*.6)*2.));
+        float rings=pow(max(0.,sin(z*11.)),20.);
+        float rail=pow(max(0.,cos(a*24.+z*.3)),38.);
+        float warp=noise(vec2(a*3.,z*.5));
+        float grid=rings*(.35+.65*cells)+rail*(.2+.8*pow(max(0.,sin(z*2.)),4.));
+        vec3 c=vec3(.008,.008,.025);
+        c+=pal(.11*z+.17*sin(a*4.))*grid*1.25;
+        c+=vec3(.65,.06,.31)*pow(max(0.,sin(a*6.+z*2.+warp*2.)),12.)*.45;
+        c+=vec3(.18,.68,.92)*.02/(r+.025);
+        c+=stars(p*38.+vec2(0.,T*.4))*.18;
+        float slice=step(.975,hash(floor(T*8.)))*step(.5,noise(vec2(floor(p.y*24.),floor(T*8.))));
+        c+=vec3(.12,.5,.68)*slice*.13;
+        return c;
+      }
+      float mountain(float x,float seed) {
+        float y=0.,amp=.45,f=1.;
+        for(int i=0;i<5;i++) {y+=abs(noise(vec2(x*f,seed+float(i)*7.))- .5)*amp;f*=2.1;amp*=.55;}
+        return y;
+      }
+      vec3 daybreak(vec2 p) {
+        float dawn=smoothstep(256.,284.,B);
+        vec3 c=mix(vec3(.016,.012,.051),vec3(.13,.035,.12),smoothstep(-.4,.9,p.y));
+        c=mix(c,c+vec3(.027,.024,.01),dawn*.65);
+        float sunR=length((p-vec2(.06,.12))*vec2(1.,1.));
+        float sun=1.-smoothstep(.414,.42,sunR);
+        float bands=step(.13,fract((p.y+.22)*18.+.16*sin(p.y*20.)));
+        c+=vec3(1.,.37,.28)*sun*bands*.9;
+        c+=vec3(1.,.19,.36)*.019/(abs(sunR-.42)+.023);
+        c+=vec3(.78,.13,.32)*exp(-abs(p.y+.24)*8.)*.2;
+        float m1=-.19+mountain(p.x*2.2+T*.025,1.)*.31;
+        float m2=-.24+mountain(p.x*3.1-T*.018,6.)*.36;
+        c=mix(c,vec3(.1,.04,.17),1.-smoothstep(-.015,.016,p.y-m1));
+        c=mix(c,vec3(.018,.019,.066),1.-smoothstep(-.01,.01,p.y-m2));
+        float ground=step(p.y,-.28);
+        float depth=1./max(.025,-p.y-.25);
+        float x=p.x*depth*1.7;
+        float z=depth+T*.7;
+        float gx=pow(1.-smoothstep(.0,.045,abs(fract(x*.25)-.5)),1.);
+        float gz=pow(1.-smoothstep(.0,.045,abs(fract(z*.36)-.5)),1.);
+        float fade=clamp((-.25-p.y)*1.7,0.,1.);
+        c=mix(c,vec3(.016,.014,.047),ground*.78);
+        c+=ground*(gx+gz)*fade*mix(vec3(.46,.14,.56),vec3(.68,.27,.46),dawn)*.53;
+        c+=ground*vec3(.1,.03,.12)*exp(-abs(p.x)*2.);
+        c+=stars(p*75.)*.18*(1.-ground);
+        return c;
+      }
+      void main() {
+        vec2 p=(gl_FragCoord.xy-.5*R)/min(R.x,R.y);
+        if(SC>2.5&&SC<3.5) {
+          float tear=step(.93,hash(floor(T*9.)))*step(.68,noise(vec2(floor(p.y*31.),floor(T*9.))));
+          p.x+=(hash(floor(p.y*31.)+floor(T*9.))-.5)*tear*.13;
+        }
+        float beatFlash=exp(-12.*fract(B));
+        vec3 c;
+        if(SC<.5) c=origin(p);
+        else if(SC<1.5) c=machine(p);
+        else if(SC<2.5) c=bloom(p);
+        else if(SC<3.5) c=overload(p);
+        else if(SC<4.5) c=daybreak(p);
+        else c=origin(p*mix(1.,2.3,clamp((B-288.)/32.,0.,1.)));
+        float pulse=SC<.5?.035:SC<3.5?.075:.04;
+        c+=pal(SC*.14)*beatFlash*pulse;
+        c+=vec3(.24,.42,.55)*exp(-10.*mod(B,32.))*.38;
+        c+=vec3(.75,.9,1.)*CUT;
+        c=1.-exp(-c*1.4);
+        c=pow(c,vec3(.91));
+        float vign=1.-.34*smoothstep(.12,1.0,length(p));
+        c*=vign;
+        float grain=(hash2(gl_FragCoord.xy+fract(T)*1000.)-.5)*.025;
+        gl_FragColor=vec4(c+grain,1.);
+      }
+    `;
+
+    function compile(type, source) {
+      const shader = gl.createShader(type);
+      if (!shader) fail('Could not create a WebGL shader.');
+      gl.shaderSource(shader, source);
+      gl.compileShader(shader);
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) fail('Shader compilation failed:\n' + gl.getShaderInfoLog(shader));
+      return shader;
+    }
+    const program = gl.createProgram();
+    if (!program) fail('Could not create the WebGL program.');
+    gl.attachShader(program, compile(gl.VERTEX_SHADER, vertexSource));
+    gl.attachShader(program, compile(gl.FRAGMENT_SHADER, fragmentSource));
+    gl.linkProgram(program);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) fail('Shader linking failed:\n' + gl.getProgramInfoLog(program));
+    gl.useProgram(program);
+    const vertices = gl.createBuffer();
+    if (!vertices) fail('Could not create the WebGL vertex buffer.');
+    gl.bindBuffer(gl.ARRAY_BUFFER, vertices);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1,1,-1,-1,1,-1,1,1,-1,1,1]), gl.STATIC_DRAW);
+    const position = gl.getAttribLocation(program, 'position');
+    if (position < 0) fail('Shader position attribute is missing.');
+    gl.enableVertexAttribArray(position);
+    gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
+    const uniform = name => { const loc = gl.getUniformLocation(program,name); if (loc === null) fail('Shader uniform '+name+' is missing.'); return loc; };
+    const U = {R:uniform('R'),T:uniform('T'),B:uniform('B'),SC:uniform('SC'),CUT:uniform('CUT')};
+
+    let audio = null, master = null, music = null, noiseBuffer = null;
+    let songStart = 0, nextStep = 0, nextTime = 0, timer = null;
+    let playing = false, paused = false, muted = false, finished = false, lastScene = -1;
+    const boot = document.getElementById('boot');
+    const hud = document.getElementById('hud');
+    const cue = document.getElementById('cue');
+    const cueIndex = document.getElementById('cue-index');
+    const cueTitle = document.getElementById('cue-title');
+    const cueSub = document.getElementById('cue-sub');
+    const whisper = document.getElementById('whisper');
+    const section = document.getElementById('section');
+    const clock = document.getElementById('clock');
+    const remaining = document.getElementById('remaining');
+    const progress = document.getElementById('progress-bar');
+    const pauseLabel = document.getElementById('pause-label');
+
+    let quality=1, frameCount=0, frameWindow=performance.now();
+    function resize() {
+      const w=window.innerWidth,h=window.innerHeight,dpr=Math.min(window.devicePixelRatio||1,1.5);
+      const cap=Math.min(1,Math.sqrt(1450000/(w*h*dpr*dpr)));
+      canvas.width=Math.max(1,Math.round(w*dpr*cap*quality));
+      canvas.height=Math.max(1,Math.round(h*dpr*cap*quality));
+      gl.viewport(0,0,canvas.width,canvas.height);
+    }
+    window.addEventListener('resize',resize);
+    resize();
+
+    function secondsLabel(v) { const n=Math.max(0,Math.ceil(v)); return String(Math.floor(n/60)).padStart(2,'0')+':'+String(n%60).padStart(2,'0'); }
+    function currentTime() { return audio ? Math.max(0,audio.currentTime-songStart) : 0; }
+    function sceneForBar(bar) { for(let i=SCENES.length-1;i>=0;i--) if(bar>=SCENES[i].bar) return i; return 0; }
+    function draw() {
+      const t=playing ? Math.min(DURATION,currentTime()) : performance.now()*.00025;
+      const bar=t/(BEAT*4);
+      const scene=playing?sceneForBar(bar):0;
+      const sceneStart=SCENES[scene].bar*4*BEAT;
+      const cut=playing ? Math.max(0,1-(t-sceneStart)/.2)*.55 : 0;
+      gl.uniform2f(U.R,canvas.width,canvas.height);
+      gl.uniform1f(U.T,t);
+      gl.uniform1f(U.B,t/BEAT);
+      gl.uniform1f(U.SC,scene);
+      gl.uniform1f(U.CUT,cut);
+      gl.drawArrays(gl.TRIANGLES,0,6);
+      if(playing) {
+        if(scene!==lastScene) {
+          lastScene=scene;
+          cueIndex.textContent=SCENES[scene].index;
+          cueTitle.textContent=SCENES[scene].title;
+          cueSub.textContent=SCENES[scene].sub;
+          section.textContent=SCENES[scene].index;
+        }
+        cue.classList.toggle('show',t-sceneStart<5.8 || (scene===5 && t-sceneStart<12));
+        const phraseBar=Math.floor(bar/8)*8;
+        whisper.textContent=WHISPERS[phraseBar]||'';
+        whisper.classList.toggle('show',!!WHISPERS[phraseBar] && (bar-phraseBar)<2.8);
+        clock.textContent=secondsLabel(t);
+        remaining.textContent=secondsLabel(DURATION-t);
+        progress.style.width=(100*t/DURATION).toFixed(2)+'%';
+        if(t>=DURATION && !finished) end();
+      }
+      frameCount++;
+      const now=performance.now();
+      if(now-frameWindow>2500) {
+        if(document.visibilityState==='visible' && playing && !paused && frameCount*1000/(now-frameWindow)<36 && quality>.56) {
+          quality=Math.max(.56,quality*.82);resize();
+        }
+        frameCount=0;frameWindow=now;
+      }
+      requestAnimationFrame(draw);
+    }
+    requestAnimationFrame(draw);
+
+    function gainEnvelope(node, when, peak, attack, hold, release) {
+      node.gain.setValueAtTime(0.0001,when);
+      node.gain.linearRampToValueAtTime(peak,when+attack);
+      node.gain.setValueAtTime(peak,when+attack+hold);
+      node.gain.exponentialRampToValueAtTime(0.0001,when+attack+hold+release);
+    }
+    function oscillator(type,freq,when,duration,volume,attack=.005,release=.15,destination=music) {
+      const o=audio.createOscillator(),g=audio.createGain();
+      o.type=type;o.frequency.setValueAtTime(freq,when);
+      gainEnvelope(g,when,volume,attack,Math.max(.001,duration-attack-release),release);
+      o.connect(g);g.connect(destination);o.start(when);o.stop(when+duration+.02);
+      return o;
+    }
+    function noise(when,duration,volume,filterType,frequency,q=1) {
+      const src=audio.createBufferSource(),filter=audio.createBiquadFilter(),g=audio.createGain();
+      src.buffer=noiseBuffer;filter.type=filterType;filter.frequency.setValueAtTime(frequency,when);filter.Q.value=q;
+      gainEnvelope(g,when,volume,.001,.001,Math.max(.01,duration-.002));
+      src.connect(filter);filter.connect(g);g.connect(music);src.start(when);src.stop(when+duration+.02);
+      return {src,filter,g};
+    }
+    function hz(midi) { return 440*Math.pow(2,(midi-69)/12); }
+    function kick(t,accent=1) {
+      const o=audio.createOscillator(),g=audio.createGain();o.type='sine';
+      o.frequency.setValueAtTime(170,t);o.frequency.exponentialRampToValueAtTime(48,t+.065);o.frequency.exponentialRampToValueAtTime(39,t+.31);
+      gainEnvelope(g,t,.92*accent,.001,.005,.35);o.connect(g);g.connect(music);o.start(t);o.stop(t+.37);
+      noise(t,.018,.06*accent,'highpass',4500);
+    }
+    function snare(t,accent=1) {
+      noise(t,.18,.29*accent,'highpass',1250,.7);
+      oscillator('triangle',185,t,.16,.15*accent,.001,.145);
+    }
+    function hat(t,open=false,accent=1) { noise(t,open?.31:.065,(open?.12:.083)*accent,'highpass',6500,.5); }
+    function bass(t,note,duration=.19,accent=1) {
+      const filter=audio.createBiquadFilter(),g=audio.createGain();
+      filter.type='lowpass';filter.Q.value=5;filter.frequency.setValueAtTime(170,t);filter.frequency.exponentialRampToValueAtTime(1000,t+.018);filter.frequency.exponentialRampToValueAtTime(160,t+duration);
+      gainEnvelope(g,t,.25*accent,.003,Math.max(.005,duration-.09),.085);
+      filter.connect(g);g.connect(music);
+      const a=audio.createOscillator(),b=audio.createOscillator();
+      a.type='sawtooth';a.frequency.value=hz(note);b.type='triangle';b.frequency.value=hz(note-12);
+      a.connect(filter);b.connect(filter);a.start(t);b.start(t);a.stop(t+duration+.03);b.stop(t+duration+.03);
+    }
+    function pluck(t,note,accent=1) {
+      const filter=audio.createBiquadFilter(),g=audio.createGain();
+      filter.type='lowpass';filter.Q.value=2.5;filter.frequency.setValueAtTime(4200,t);filter.frequency.exponentialRampToValueAtTime(580,t+.29);
+      gainEnvelope(g,t,.088*accent,.002,.006,.32);
+      filter.connect(g);g.connect(music);
+      const o=audio.createOscillator();o.type='sawtooth';o.frequency.value=hz(note);o.connect(filter);o.start(t);o.stop(t+.35);
+    }
+    function lead(t,note,duration=.4,accent=1) {
+      const filter=audio.createBiquadFilter(),g=audio.createGain();
+      filter.type='lowpass';filter.frequency.setValueAtTime(2200,t);filter.Q.value=1.3;
+      gainEnvelope(g,t,.10*accent,.015,Math.max(.01,duration-.1),.085);
+      filter.connect(g);g.connect(music);
+      for(const detune of [-7,7]) {const o=audio.createOscillator();o.type='sawtooth';o.frequency.value=hz(note);o.detune.value=detune;o.connect(filter);o.start(t);o.stop(t+duration+.02);}
+    }
+    function pad(t,notes,duration,volume) {
+      const filter=audio.createBiquadFilter(),g=audio.createGain();filter.type='lowpass';filter.frequency.value=1100;
+      gainEnvelope(g,t,volume,.7,Math.max(.02,duration-1.8),1.1);filter.connect(g);g.connect(music);
+      for(let i=0;i<notes.length;i++) for(const detune of [-5,5]) {
+        const o=audio.createOscillator();o.type='sawtooth';o.frequency.value=hz(notes[i]);o.detune.value=detune;o.connect(filter);o.start(t);o.stop(t+duration+.03);
+      }
+    }
+    function riser(t) {
+      const n=noise(t,BEAT*4,.05,'bandpass',300,1.2);
+      n.filter.frequency.exponentialRampToValueAtTime(6500,t+BEAT*4);
+      n.g.gain.setValueAtTime(.0001,t);n.g.gain.linearRampToValueAtTime(.12,t+BEAT*3.7);n.g.gain.exponentialRampToValueAtTime(.0001,t+BEAT*4);
+    }
+
+    const roots=[42,38,45,40]; // F# minor / D / A / E
+    const chords=[[54,57,61,66],[50,54,57,62],[57,61,64,69],[52,56,59,64]];
+    const bassPattern=[0,0,7,0,12,7];
+    const arpPattern=[0,2,1,3,2,1,0,2];
+    const leadPattern=[73,76,78,80,78,76,73,71,69,71,73,76,73,71,69,68];
+    function scheduleStep(step,t) {
+      const bar=Math.floor(step/16),s=step%16;
+      if(bar>=BARS) return;
+      const scene=sceneForBar(bar),chord=Math.floor(bar/4)%4,root=roots[chord];
+      if(s===0 && bar%4===0) pad(t,chords[chord],BEAT*15.9,scene===0?.022:scene===5?.02:.031);
+      if(scene===0) {
+        if(s%4===0) pluck(t,chords[chord][arpPattern[(bar*4+s/4)%8]]+12,.7);
+        if(bar>=4 && s===0) kick(t,.55);
+      } else if(scene===5) {
+        if(s%4===0) pluck(t,chords[chord][arpPattern[(bar*4+s/4)%8]]+12,.5);
+        if(bar<76 && s===0) kick(t,.45);
+      } else {
+        const breakdown=(scene===2&&bar>=32&&bar<36)||(scene===3&&bar>=48&&bar<52);
+        if(s%4===0 && (!breakdown || s===0 || s===8)) kick(t,s===0?1:.84);
+        if(s===4||s===12) snare(t,s===12?1:.85);
+        if(scene===3 && (s===7||s===15)) snare(t,.26);
+        if(s%2===0) hat(t,s===6||s===14,s%4===2?.75:.5);
+        if(scene===3 && (s===3||s===11)) hat(t,false,.42);
+        const bassSteps=[0,3,6,8,11,14],k=bassSteps.indexOf(s);
+        if(k>=0 && (!breakdown || s===0 || s===8)) bass(t,root+bassPattern[k],s===0?.32:.18,scene===2?.8:1);
+        if(scene===1) {
+          if(s%2===0) pluck(t,chords[chord][arpPattern[(bar*8+s/2)%8]]+12,.65);
+        } else if(scene===2) {
+          if(s%2===0) pluck(t,chords[chord][arpPattern[(bar*8+s/2)%8]]+12,.55);
+          if(s===0||s===6||s===10) lead(t,leadPattern[(bar*3+Math.floor(s/4))%16],BEAT*(s===0?1.3:.7),.7);
+        } else if(scene===3) {
+          if(s%2===0) pluck(t,chords[chord][arpPattern[(bar*8+s/2)%8]]+24,.65);
+          if(s===0||s===8) lead(t,leadPattern[(bar*2+s/8)%16],BEAT*1.3,.7);
+        } else if(scene===4) {
+          if(s%2===0) pluck(t,chords[chord][arpPattern[(bar*8+s/2)%8]]+12,.7);
+          if(s===0||s===4||s===8||s===12) {
+            const melody=leadPattern[(bar*4+s/4)%16];
+            lead(t,melody,BEAT*.85,1);
+            if(bar>=64 && (s===0||s===8)) lead(t,melody+12,BEAT*.7,.34);
+          }
+        }
+        if(s===0 && bar%8===7) riser(t);
+      }
+    }
+    function scheduler() {
+      if(!audio || paused || finished) return;
+      while(nextTime<audio.currentTime+.16 && nextStep<BARS*16) {
+        scheduleStep(nextStep,nextTime);
+        nextStep++;
+        nextTime+=BEAT/4;
+      }
+    }
+    function initAudio() {
+      const Ctor=window.AudioContext||window.webkitAudioContext;
+      if(!Ctor) fail('Web Audio is required to play AFTERIMAGE.');
+      audio=new Ctor();
+      master=audio.createGain();master.gain.value=.66;
+      const compressor=audio.createDynamicsCompressor();compressor.threshold.value=-18;compressor.knee.value=18;compressor.ratio.value=3;compressor.attack.value=.003;compressor.release.value=.18;
+      music=audio.createGain();music.gain.value=.76;
+      const delay=audio.createDelay(1);delay.delayTime.value=BEAT*.75;
+      const feedback=audio.createGain();feedback.gain.value=.23;
+      const wet=audio.createGain();wet.gain.value=.16;
+      music.connect(compressor);music.connect(delay);delay.connect(feedback);feedback.connect(delay);delay.connect(wet);wet.connect(compressor);compressor.connect(master);master.connect(audio.destination);
+      noiseBuffer=audio.createBuffer(1,Math.ceil(audio.sampleRate*2),audio.sampleRate);
+      const data=noiseBuffer.getChannelData(0);
+      for(let i=0;i<data.length;i++) data[i]=Math.random()*2-1;
+    }
+    async function start() {
+      if(playing) return;
+      initAudio();
+      await audio.resume();
+      songStart=audio.currentTime+.1;nextTime=songStart;nextStep=0;
+      playing=true;paused=false;finished=false;lastScene=-1;
+      scheduler();timer=setInterval(scheduler,25);
+      boot.classList.add('hidden');hud.classList.add('visible');hud.setAttribute('aria-hidden','false');
+    }
+    function end() {
+      finished=true;clearInterval(timer);music.gain.setTargetAtTime(0,audio.currentTime,.25);
+      boot.classList.remove('hidden');
+      document.getElementById('start').textContent='Replay transmission ↗';
+      hud.classList.remove('visible');hud.setAttribute('aria-hidden','true');
+      playing=false;paused=false;lastScene=-1;
+      audio.close();audio=null;
+    }
+    async function togglePause() {
+      if(!playing || finished) return;
+      if(paused) {await audio.resume();paused=false;scheduler();pauseLabel.classList.remove('show');}
+      else {await audio.suspend();paused=true;pauseLabel.classList.add('show');}
+    }
+    document.getElementById('start').addEventListener('click',()=>{start().catch(e=>fail('Audio could not start: '+e.message));});
+    window.addEventListener('keydown',e=>{
+      if(e.code==='Space') {e.preventDefault();if(!playing) document.getElementById('start').click();else togglePause().catch(err=>fail('Playback could not change state: '+err.message));}
+      if(e.key.toLowerCase()==='m' && master) {muted=!muted;master.gain.setTargetAtTime(muted?0:.66,audio.currentTime,.02);}
+      if(e.key.toLowerCase()==='f') {if(document.fullscreenElement) document.exitFullscreen();else document.documentElement.requestFullscreen();}
+    });
+  })();
+  </script>
+</body>
+</html>
